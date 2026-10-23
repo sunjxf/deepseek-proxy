@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +10,9 @@ import {
   updateConfig,
   publicConfig,
   CONFIG_PATH,
+  setConfigLogger,
 } from './config.js';
-import { solveAndBuildHeader } from './pow.js';
+import { solveAndBuildHeader, setPowLogger } from './pow.js';
 import {
   ToolCallBuffer,
   buildPromptFromMessages,
@@ -18,9 +20,160 @@ import {
   formatToolsInstruction,
   newToolUseId,
   newMessageId,
+  setToolLogger,
 } from './tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/* ---------- 日志 ---------- */
+
+// 日志级别：error < warn < info < debug，由 LOG_LEVEL 环境变量控制，默认 info
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const LOG_LEVEL = LOG_LEVELS[String(process.env.LOG_LEVEL || 'info').toLowerCase()] ?? 2;
+
+// 日志文件：默认 logs/app.log，可用 LOG_FILE 覆盖；LOG_TO_FILE=0 可关闭
+const LOG_FILE =
+  process.env.LOG_FILE || path.join(__dirname, 'logs', 'app.log');
+const LOG_TO_FILE = String(process.env.LOG_TO_FILE ?? '1') !== '0';
+// 单文件大小上限（默认 5MB），超过后轮转为 app.log.1
+const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES) || 5 * 1024 * 1024;
+
+let logStream = null;
+let logBytes = 0;
+
+function openLogStream() {
+  if (!LOG_TO_FILE) return null;
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    try {
+      logBytes = fs.statSync(LOG_FILE).size;
+    } catch {
+      logBytes = 0;
+    }
+    const s = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+    s.on('error', (e) => {
+      // 写文件失败不能让服务崩溃，降级为仅 console
+      console.error('[log] 日志文件写入失败，已降级为仅控制台：', e.message);
+      logStream = null;
+    });
+    return s;
+  } catch (e) {
+    console.error('[log] 无法创建日志文件，已降级为仅控制台：', e.message);
+    return null;
+  }
+}
+
+logStream = openLogStream();
+
+function rotateIfNeeded() {
+  if (!logStream || logBytes < LOG_MAX_BYTES) return;
+  try {
+    logStream.end();
+    const backup = `${LOG_FILE}.1`;
+    fs.rmSync(backup, { force: true });
+    fs.renameSync(LOG_FILE, backup);
+    logBytes = 0;
+    logStream = openLogStream();
+  } catch (e) {
+    console.error('[log] 日志轮转失败：', e.message);
+  }
+}
+
+function writeToFile(line) {
+  if (!logStream) return;
+  try {
+    logStream.write(line);
+    logBytes += Buffer.byteLength(line);
+    rotateIfNeeded();
+  } catch {
+    /* 忽略：日志失败不影响主流程 */
+  }
+}
+
+// 日期时间（本地时区）YYYY-MM-DD HH:mm:ss.SSS
+function ts() {
+  const d = new Date();
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+  );
+}
+
+// 把日志参数拼成一行可读文本（对非字符串做序列化）
+function formatArgs(args) {
+  return args
+    .map((a) => {
+      if (typeof a === 'string') return a;
+      if (a instanceof Error) return a.stack || a.message;
+      try {
+        return JSON.stringify(a);
+      } catch {
+        return String(a);
+      }
+    })
+    .join(' ');
+}
+
+function makeLog(scope, rid) {
+  const prefix = () => `[${ts()}][${scope}]${rid ? `[${rid}]` : ''}`;
+  const emit = (level, consoleFn, minLevel, args) => {
+    if (LOG_LEVEL < minLevel) return;
+    const line = `${prefix()} ${formatArgs(args)}\n`;
+    consoleFn(line.trimEnd());
+    writeToFile(line);
+  };
+  return {
+    error: (...a) => emit('error', console.error, 0, a),
+    warn: (...a) => emit('warn', console.warn, 1, a),
+    info: (...a) => emit('info', console.log, 2, a),
+    debug: (...a) => emit('debug', console.log, 3, a),
+  };
+}
+
+const log = makeLog('proxy');
+
+// 每个请求一个短 ID，便于把同一请求的多行日志串起来
+let reqSeq = 0;
+function newRequestId() {
+  reqSeq = (reqSeq + 1) % 100000;
+  return `${reqSeq.toString(36)}-${Date.now().toString(36).slice(-4)}`;
+}
+
+// 截断长文本用于日志，避免刷屏
+function preview(text, len = 200) {
+  if (text == null) return '';
+  const s = String(text).replace(/\s+/g, ' ');
+  return s.length > len ? s.slice(0, len) + `…(${s.length}字符)` : s;
+}
+
+// 把请求体序列化成一行完整 JSON 用于日志。
+// 默认上限 1M 个 UTF-16 字符（不是字节；中文落盘字节约为字符数 × 3），
+// 超出按字符数截断并在尾部标注完整长度；设置为 0 可完全关闭请求体日志。
+const LOG_BODY_MAX = Number(process.env.LOG_BODY_MAX ?? 1024 * 1024);
+function dumpBody(body) {
+  if (LOG_BODY_MAX === 0) return '(已关闭)';
+  let s;
+  try {
+    s = JSON.stringify(body);
+  } catch (e) {
+    return `(序列化失败：${e.message})`;
+  }
+  if (s == null) return '(空)';
+  if (LOG_BODY_MAX > 0 && s.length > LOG_BODY_MAX) {
+    return s.slice(0, LOG_BODY_MAX) + `…(截断，完整 ${s.length} 字符)`;
+  }
+  return s;
+}
+
+// 把统一日志注入到各模块，保证输出格式、级别、时间戳一致
+const moduleLog = (scope) => (level, msg, extra) => {
+  const fn = log[level] || log.info;
+  fn(`[${scope}] ${msg}`, extra ?? '');
+};
+setConfigLogger(moduleLog('config'));
+setPowLogger(moduleLog('pow'));
+setToolLogger(moduleLog('tool_call'));
 
 loadConfig();
 
@@ -69,7 +222,11 @@ async function throttle() {
   if (windowCount >= limit) {
     const wait = 60_000 - (now - windowStart);
     stats.throttledRequests += 1;
-    console.warn(`[proxy] 本机节流，等待 ${wait}ms`);
+    log.warn('throttle', '本机限流触发，等待后继续', {
+      limit,
+      count: windowCount,
+      waitMs: wait,
+    });
     await sleep(wait);
     windowStart = Date.now();
     windowCount = 0;
@@ -95,7 +252,11 @@ function waitForInterval() {
     if (lastRequestAt && elapsed < interval) {
       const wait = interval - elapsed;
       stats.throttledRequests += 1;
-      console.warn(`[proxy] 请求间隔限制，等待 ${wait}ms`);
+      log.debug('interval', '请求间隔不足，排队等待', {
+        intervalMs: interval,
+        elapsedMs: elapsed,
+        waitMs: wait,
+      });
       await sleep(wait);
     }
     lastRequestAt = Date.now();
@@ -153,21 +314,34 @@ function calcDelay(attempt, retryAfterHeader, baseDelay) {
   return Math.min(base + jitter, 16_000);
 }
 
-async function fetchWithRetry(url, options, cfg, onRetry) {
+async function fetchWithRetry(url, options, cfg, onRetry, lg = log) {
   const maxRetries = Number(cfg.maxRetries) || 0;
   const baseDelay = Number(cfg.retryBaseDelayMs) || 1000;
+  const timeoutMs = Number(cfg.requestTimeoutMs) || 120000;
   let lastResponse = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      Number(cfg.requestTimeoutMs) || 120000
-    );
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const started = Date.now();
 
     try {
+      lg.debug('upstream', '发送上游请求', {
+        url,
+        attempt,
+        timeoutMs,
+        bodyBytes: options.body ? Buffer.byteLength(options.body) : 0,
+      });
+
       const res = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timer);
+
+      lg.debug('upstream', '上游响应', {
+        status: res.status,
+        ms: Date.now() - started,
+        attempt,
+        contentType: res.headers.get('content-type'),
+      });
 
       if (!RETRYABLE_STATUS.has(res.status) || attempt === maxRetries) {
         return res;
@@ -186,15 +360,24 @@ async function fetchWithRetry(url, options, cfg, onRetry) {
       lastResponse = res;
     } catch (e) {
       clearTimeout(timer);
-      if (attempt === maxRetries) throw e;
+      const kind = e.name === 'AbortError' ? 'timeout' : e.message;
+      if (attempt === maxRetries) {
+        lg.error('upstream', '上游请求最终失败', {
+          attempt,
+          ms: Date.now() - started,
+          error: kind,
+        });
+        throw e;
+      }
       const delay = calcDelay(attempt, null, baseDelay);
       stats.retriedRequests += 1;
-      if (onRetry)
-        onRetry(
-          e.name === 'AbortError' ? 'timeout' : e.message,
-          attempt + 1,
-          delay
-        );
+      lg.warn('upstream', '上游请求异常，准备重试', {
+        attempt,
+        ms: Date.now() - started,
+        error: kind,
+        delayMs: Math.round(delay),
+      });
+      if (onRetry) onRetry(kind, attempt + 1, delay);
       await sleep(delay);
     }
   }
@@ -241,7 +424,7 @@ function extractDeepSeekText(obj) {
 
 /* ---------- 转发到 DeepSeek ---------- */
 
-async function forwardToDeepSeek(cfg, req, prompt, opts = {}) {
+async function forwardToDeepSeek(cfg, req, prompt, opts = {}, lg = log) {
   const body = {
     chat_session_id: opts.chatSessionId || cfg.chatSessionId,
     parent_message_id: null,
@@ -254,14 +437,23 @@ async function forwardToDeepSeek(cfg, req, prompt, opts = {}) {
     preempt: false,
   };
 
+
   let powHeader = null;
   if (cfg.powEnabled !== false && !req.headers['x-ds-pow-response']) {
+    const powStarted = Date.now();
     try {
+      lg.debug('pow', '开始求解 PoW');
       powHeader = await solveAndBuildHeader(cfg);
+      lg.info('pow', 'PoW 求解成功', { ms: Date.now() - powStarted });
     } catch (e) {
-      console.warn(`[proxy] PoW 求解失败：${e.message}`);
+      lg.warn('pow', 'PoW 求解失败，将以无 PoW 头继续', {
+        ms: Date.now() - powStarted,
+        error: e.message,
+      });
       recordError(`PoW 求解失败：${e.message}`);
     }
+  } else if (req.headers['x-ds-pow-response']) {
+    lg.debug('pow', '复用客户端提供的 PoW 头');
   }
 
   return fetchWithRetry(
@@ -273,11 +465,14 @@ async function forwardToDeepSeek(cfg, req, prompt, opts = {}) {
     },
     cfg,
     (status, attempt, delay) => {
-      console.warn(
-        `[proxy] 上游 ${status}，第 ${attempt} 次重试，等待 ${delay}ms`
-      );
+      lg.warn('forward', '上游可重试状态，等待后重试', {
+        status,
+        attempt,
+        delayMs: Math.round(delay),
+      });
       recordError(`上游 ${status}，已触发重试`);
-    }
+    },
+    lg
   );
 }
 
@@ -338,7 +533,7 @@ async function* iterateDeepSeekEvents(upstream) {
 
 /* ---------- OpenAI 兼容：流式 ---------- */
 
-async function streamAsOpenAI(upstream, res, model) {
+async function streamAsOpenAI(upstream, res, model, lg = log) {
   const id = 'chatcmpl-' + Date.now().toString(36);
   const created = Math.floor(Date.now() / 1000);
   const actualModel = model || 'deepseek-chat';
@@ -414,11 +609,14 @@ async function streamAsOpenAI(upstream, res, model) {
       );
     }
 
+    lg.info('openai-stream', '流式输出完成', {
+      toolCalls: toolCallsOut.length,
+    });
     writeChunk({}, toolCallsOut.length > 0 ? 'tool_calls' : 'stop');
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (e) {
-    console.error('[openai-stream] error:', e);
+    lg.error('openai-stream', '流式输出中断', { error: e.message });
     writeChunk({}, 'stop');
     res.write('data: [DONE]\n\n');
     res.end();
@@ -427,7 +625,7 @@ async function streamAsOpenAI(upstream, res, model) {
 
 /* ---------- Anthropic 兼容：流式 ---------- */
 
-async function streamAsAnthropic(upstream, res, model) {
+async function streamAsAnthropic(upstream, res, model, lg = log) {
   const msgId = newMessageId();
   const actualModel = model || 'deepseek-chat';
 
@@ -560,8 +758,16 @@ async function streamAsAnthropic(upstream, res, model) {
     writeEvent('message_stop', { type: 'message_stop' });
     res.end();
     finished = true;
+    lg.info('anthropic-stream', '流式输出完成', {
+      blocks: blockIndex,
+      toolCalls: hasToolCall,
+      stopReason: hasToolCall ? 'tool_use' : 'end_turn',
+    });
   } catch (e) {
-    console.error('[anthropic-stream] error:', e);
+    lg.error('anthropic-stream', '流式输出异常', {
+      error: e.message,
+      stack: e.stack?.split('\n').slice(0, 4).join(' | '),
+    });
     if (!finished) {
       writeEvent('error', {
         type: 'error',
@@ -656,8 +862,17 @@ app.post('/admin/api/test', async (req, res) => {
 
 app.post('/api/v0/chat/completion', async (req, res) => {
   const cfg = getConfig();
+  const rid = newRequestId();
+  const lg = makeLog('native', rid);
+  const started = Date.now();
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
+  lg.info('native', '收到请求', {
+    ip: req.ip,
+    stream: true,
+    sessionId: req.body?.chat_session_id || cfg.chatSessionId || '(空)',
+    body: dumpBody(req.body),
+  });
 
   try {
     await throttle();
@@ -670,10 +885,15 @@ app.post('/api/v0/chat/completion', async (req, res) => {
 
     let powHeader = null;
     if (cfg.powEnabled !== false && !req.headers['x-ds-pow-response']) {
+      const powStarted = Date.now();
       try {
         powHeader = await solveAndBuildHeader(cfg);
+        lg.debug('pow', 'PoW 求解成功', { ms: Date.now() - powStarted });
       } catch (e) {
-        console.warn(`[proxy] PoW 求解失败：${e.message}`);
+        lg.warn('pow', 'PoW 求解失败，将以无 PoW 头继续', {
+          ms: Date.now() - powStarted,
+          error: e.message,
+        });
         recordError(`PoW 求解失败：${e.message}`);
       }
     }
@@ -687,10 +907,13 @@ app.post('/api/v0/chat/completion', async (req, res) => {
       },
       cfg,
       (status, attempt, delay) => {
-        console.warn(
-          `[proxy] 上游 ${status}，第 ${attempt} 次重试，等待 ${delay}ms`
-        );
-      }
+        lg.warn('native', '上游可重试状态，等待后重试', {
+          status,
+          attempt,
+          delayMs: Math.round(delay),
+        });
+      },
+      lg
     );
 
     if (!upstream) throw new Error('上游无响应');
@@ -735,8 +958,18 @@ app.post('/api/v0/chat/completion', async (req, res) => {
 
 app.post('/v1/chat/completions', async (req, res) => {
   const cfg = getConfig();
+  const rid = newRequestId();
+  const lg = makeLog('openai', rid);
+  const started = Date.now();
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
+  lg.info('收到请求', {
+    model: req.body?.model,
+    stream: !!req.body?.stream,
+    messages: req.body?.messages?.length ?? 0,
+    tools: req.body?.tools?.length ?? 0,
+    body: dumpBody(req.body),
+  });
 
   try {
     await throttle();
@@ -749,6 +982,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     );
 
     if (!prompt) {
+      lg.warn('请求缺少用户消息', { body: preview(dumpBody(req.body), 300) });
       res.status(400).json({
         error: {
           message: 'no user message found',
@@ -760,10 +994,16 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const stream = !!req.body.stream;
 
-    const upstream = await forwardToDeepSeek(cfg, req, prompt, {
-      thinking: !!req.body.thinking,
-      search: !!req.body.search,
-    });
+    const upstream = await forwardToDeepSeek(
+      cfg,
+      req,
+      prompt,
+      {
+        thinking: !!req.body.thinking,
+        search: !!req.body.search,
+      },
+      lg
+    );
 
     if (!upstream) throw new Error('上游无响应');
 
@@ -771,6 +1011,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       const text = await upstream.text();
       stats.failedRequests += 1;
       recordError(`上游 HTTP ${upstream.status}`);
+      lg.warn('上游返回错误', {
+        status: upstream.status,
+        body: preview(text, 300),
+      });
       res.status(upstream.status).json({
         error: {
           message: text.slice(0, 800) || `upstream ${upstream.status}`,
@@ -787,7 +1031,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
       res.setHeader('x-accel-buffering', 'no');
-      await streamAsOpenAI(upstream, res, req.body.model);
+      await streamAsOpenAI(upstream, res, req.body.model, lg);
     } else {
       const { text, toolCalls } = await collectDeepSeek(upstream);
       const toolCallsOut =
@@ -826,6 +1070,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     stats.failedRequests += 1;
     const msg = e.name === 'AbortError' ? '请求超时' : e.message;
     recordError(msg);
+    lg.error('请求处理失败', { error: msg, ms: Date.now() - started });
     if (!res.headersSent) {
       res.status(502).json({ error: { message: msg, type: 'proxy_error' } });
     } else {
@@ -838,8 +1083,17 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 app.post('/v1/messages', async (req, res) => {
   const cfg = getConfig();
+  const rid = newRequestId();
+  const lg = makeLog('anthropic', rid);
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
+  lg.info('收到请求', {
+    model: req.body?.model,
+    stream: req.body?.stream !== false,
+    messages: req.body?.messages?.length ?? 0,
+    tools: req.body?.tools?.length ?? 0,
+    body: dumpBody(req.body),
+  });
 
   try {
     await throttle();
@@ -864,10 +1118,16 @@ app.post('/v1/messages', async (req, res) => {
 
     const stream = req.body.stream !== false;
 
-    const upstream = await forwardToDeepSeek(cfg, req, prompt, {
-      thinking: !!req.body.thinking,
-      search: !!req.body.search,
-    });
+    const upstream = await forwardToDeepSeek(
+      cfg,
+      req,
+      prompt,
+      {
+        thinking: !!req.body.thinking,
+        search: !!req.body.search,
+      },
+      lg
+    );
 
     if (!upstream) throw new Error('上游无响应');
 
@@ -875,6 +1135,10 @@ app.post('/v1/messages', async (req, res) => {
       const text = await upstream.text();
       stats.failedRequests += 1;
       recordError(`上游 HTTP ${upstream.status}`);
+      lg.warn('上游返回错误', {
+        status: upstream.status,
+        body: preview(text, 300),
+      });
       res.status(upstream.status).json({
         type: 'error',
         error: {
@@ -892,7 +1156,8 @@ app.post('/v1/messages', async (req, res) => {
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
       res.setHeader('x-accel-buffering', 'no');
-      await streamAsAnthropic(upstream, res, req.body.model);
+      lg.info('开始流式输出', { model: req.body.model });
+      await streamAsAnthropic(upstream, res, req.body.model, lg);
     } else {
       const { text, toolCalls } = await collectDeepSeek(upstream);
 
@@ -944,11 +1209,12 @@ app.get('/', (req, res) => res.redirect('/admin/'));
 const cfg = getConfig();
 
 app.listen(cfg.port, cfg.host, () => {
-  console.log(`代理服务:  http://${cfg.host}:${cfg.port}`);
-  console.log(`配置页面:  http://${cfg.host}:${cfg.port}/admin`);
-  console.log(`测试页面:  http://${cfg.host}:${cfg.port}/test`);
-  console.log(`OpenAI:   http://${cfg.host}:${cfg.port}/v1/chat/completions`);
-  console.log(`Anthropic:http://${cfg.host}:${cfg.port}/v1/messages`);
-  console.log(`配置文件:  ${CONFIG_PATH}`);
-  console.log(`PoW 自动求解: ${cfg.powEnabled !== false ? '已开启' : '已关闭'}`);
+  log.info(`代理服务:   http://${cfg.host}:${cfg.port}`);
+  log.info(`配置页面:   http://${cfg.host}:${cfg.port}/admin`);
+  log.info(`测试页面:   http://${cfg.host}:${cfg.port}/test`);
+  log.info(`OpenAI:    http://${cfg.host}:${cfg.port}/v1/chat/completions`);
+  log.info(`Anthropic: http://${cfg.host}:${cfg.port}/v1/messages`);
+  log.info(`配置文件:   ${CONFIG_PATH}`);
+  log.info(`日志文件:   ${LOG_TO_FILE ? LOG_FILE : '(已关闭)'}`);
+  log.info(`PoW 自动求解: ${cfg.powEnabled !== false ? '已开启' : '已关闭'}`);
 });

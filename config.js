@@ -4,6 +4,16 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// 轻量日志：默认走 console，可通过 setConfigLogger 注入
+let clog = (level, msg, extra) => {
+  const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  fn(`[config] ${msg}`, extra ?? '');
+};
+
+export function setConfigLogger(fn) {
+  if (typeof fn === 'function') clog = fn;
+}
+
 export const CONFIG_PATH =
   process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
 
@@ -56,9 +66,12 @@ export function loadConfig() {
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       fromFile = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      clog('debug', '配置已加载', { path: CONFIG_PATH });
     } catch (e) {
-      console.error('[config] 解析失败：', e.message);
+      clog('error', '配置解析失败', { path: CONFIG_PATH, error: e.message });
     }
+  } else {
+    clog('warn', '配置文件不存在，使用默认配置', { path: CONFIG_PATH });
   }
   current = { ...DEFAULTS };
   for (const key of Object.keys(DEFAULTS)) {
@@ -76,13 +89,19 @@ function persist() {
   const dir = path.dirname(CONFIG_PATH);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${CONFIG_PATH}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(current, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, CONFIG_PATH);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(current, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_PATH);
+  } catch (e) {
+    clog('error', '配置写入失败', { path: CONFIG_PATH, error: e.message });
+    throw e;
+  }
   try {
     fs.chmodSync(CONFIG_PATH, 0o600);
   } catch {
     /* Windows 上可能失败，忽略 */
   }
+  clog('info', '配置已保存', { path: CONFIG_PATH });
 }
 
 /**
@@ -93,8 +112,12 @@ function persist() {
  */
 export function updateConfig(patch = {}) {
   const next = { ...current };
+  const changed = [];
   for (const [key, raw] of Object.entries(patch)) {
-    if (!(key in DEFAULTS)) continue;
+    if (!(key in DEFAULTS)) {
+      clog('warn', '忽略未知配置项', { key });
+      continue;
+    }
 
     if (raw === null) {
       next[key] = '';
@@ -103,9 +126,11 @@ export function updateConfig(patch = {}) {
     if (raw === '') {
       if (SENSITIVE_FIELDS.includes(key)) continue;
       next[key] = '';
+      changed.push(key);
       continue;
     }
     next[key] = raw;
+    changed.push(key);
   }
 
   next.port = Number(next.port) || 3000;
@@ -129,6 +154,7 @@ export function updateConfig(patch = {}) {
 
   current = next;
   persist();
+  clog('info', '配置已更新', { fields: changed.join(',') || '(无变化)' });
   return current;
 }
 

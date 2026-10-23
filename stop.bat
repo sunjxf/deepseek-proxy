@@ -3,7 +3,8 @@ setlocal
 chcp 65001 >nul
 
 rem ============================================================
-rem  DeepSeek Proxy 停止脚本
+rem  DeepSeek Proxy 停止脚本（强杀）
+rem  用法：stop.bat
 rem ============================================================
 
 cd /d "%~dp0"
@@ -24,18 +25,14 @@ if "%RUNNING%"=="0" (
   exit /b 0
 )
 
-echo [信息] 正在停止 PID=%PID% ...
-taskkill /PID %PID% /T >nul 2>nul
-if errorlevel 1 (
-  echo [警告] 优雅停止失败，强制结束。
-  taskkill /PID %PID% /T /F >nul 2>nul
-)
+echo [信息] 正在结束 PID=%PID% ...
+taskkill /PID %PID% /T /F >nul 2>nul
 
-ping -n 3 127.0.0.1 >nul
+ping -n 2 127.0.0.1 >nul
 
 call :IS_RUNNING %PID%
 if "%RUNNING%"=="1" (
-  echo [错误] 无法停止 PID=%PID%
+  echo [错误] 无法结束 PID=%PID%
   exit /b 1
 )
 

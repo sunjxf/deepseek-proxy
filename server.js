@@ -625,9 +625,44 @@ async function* iterateDeepSeekEvents(upstream) {
   }
 }
 
+/* ---------- token 估算 ---------- */
+
+// 上游网页端 SSE 不提供 token 计数，这里按字符粗估：
+// CJK / 全角符号约 1 字符 1 token，其余（ASCII 等）约 4 字符 1 token。
+function estimateTokens(text) {
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (
+      (cp >= 0x4e00 && cp <= 0x9fff) ||
+      (cp >= 0x3000 && cp <= 0x303f) ||
+      (cp >= 0xff00 && cp <= 0xffef) ||
+      (cp >= 0x3040 && cp <= 0x30ff) ||
+      (cp >= 0xac00 && cp <= 0xd7af)
+    ) {
+      cjk += 1;
+    } else {
+      other += 1;
+    }
+  }
+  return cjk + Math.ceil(other / 4);
+}
+
+function makeUsage(promptText, completionText) {
+  const prompt_tokens = estimateTokens(promptText);
+  const completion_tokens = estimateTokens(completionText);
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens: prompt_tokens + completion_tokens,
+  };
+}
+
 /* ---------- OpenAI 兼容：流式 ---------- */
 
-async function streamAsOpenAI(upstream, res, model, lg = log) {
+async function streamAsOpenAI(upstream, res, model, lg = log, promptText = '') {
   const id = 'chatcmpl-' + Date.now().toString(36);
   const created = Math.floor(Date.now() / 1000);
   const actualModel = model || 'deepseek-chat';
@@ -712,10 +747,24 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
     }
 
     lg.info('openai-stream', formatExchange(rawAll, toolCallsOut, cleanAll));
+
+    const usage = makeUsage(promptText, cleanAll);
     lg.info('openai-stream', '流式输出完成', {
       toolCalls: toolCallsOut.length,
+      usage,
     });
     writeChunk({}, toolCallsOut.length > 0 ? 'tool_calls' : 'stop');
+    // 无条件追加 usage chunk（OpenAI 规范中该 chunk 的 choices 为空数组）
+    res.write(
+      `data: ${JSON.stringify({
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model: actualModel,
+        choices: [],
+        usage,
+      })}\n\n`
+    );
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (e) {
@@ -728,7 +777,7 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
 
 /* ---------- Anthropic 兼容：流式 ---------- */
 
-async function streamAsAnthropic(upstream, res, model, lg = log) {
+async function streamAsAnthropic(upstream, res, model, lg = log, promptText = '') {
   const msgId = newMessageId();
   const actualModel = model || 'deepseek-chat';
 
@@ -747,7 +796,10 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: 0, output_tokens: 0 },
+      usage: {
+        input_tokens: estimateTokens(promptText),
+        output_tokens: 0,
+      },
     },
   });
 
@@ -879,7 +931,7 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
         stop_reason: hasToolCall ? 'tool_use' : 'end_turn',
         stop_sequence: null,
       },
-      usage: { output_tokens: 0 },
+      usage: { output_tokens: makeUsage(promptText, cleanAll).completion_tokens },
     });
 
     writeEvent('message_stop', { type: 'message_stop' });
@@ -1161,7 +1213,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
       res.setHeader('x-accel-buffering', 'no');
-      await streamAsOpenAI(upstream, res, req.body.model, lg);
+      await streamAsOpenAI(upstream, res, req.body.model, lg, prompt);
     } else {
       const { text, toolCalls, rawAll } = await collectDeepSeek(upstream, lg);
       const toolCallsOut =
@@ -1195,7 +1247,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             finish_reason: toolCallsOut ? 'tool_calls' : 'stop',
           },
         ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        usage: makeUsage(prompt, text),
       });
     }
   } catch (e) {
@@ -1289,7 +1341,7 @@ app.post('/v1/messages', async (req, res) => {
       res.setHeader('connection', 'keep-alive');
       res.setHeader('x-accel-buffering', 'no');
       lg.info('开始流式输出', { model: req.body.model });
-      await streamAsAnthropic(upstream, res, req.body.model, lg);
+      await streamAsAnthropic(upstream, res, req.body.model, lg, prompt);
     } else {
       const { text, toolCalls, rawAll } = await collectDeepSeek(upstream, lg);
 
@@ -1314,7 +1366,10 @@ app.post('/v1/messages', async (req, res) => {
         content,
         stop_reason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: {
+          input_tokens: makeUsage(prompt, '').prompt_tokens,
+          output_tokens: makeUsage('', text).completion_tokens,
+        },
       });
     }
   } catch (e) {

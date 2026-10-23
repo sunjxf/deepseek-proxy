@@ -5,9 +5,9 @@ chcp 65001 >nul
 rem ============================================================
 rem  DeepSeek Proxy 后台启动脚本
 rem  用法：
-rem    start.bat            后台启动
-rem    start.bat --fg       前台启动（调试用）
-rem    start.bat --debug    后台启动并开启 debug 日志
+rem    run.bat              后台启动
+rem    run.bat --fg         前台启动（调试用）
+rem    run.bat --debug      后台启动并开启 debug 日志
 rem ============================================================
 
 cd /d "%~dp0"

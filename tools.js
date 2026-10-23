@@ -42,7 +42,8 @@ function tp(text, len = 160) {
 
 /* ---------- 转换前后日志 ---------- */
 
-// 统一输出转换前/转换后的完整内容（不截断），只在内容真的变化时才打。
+// 输出转换前/转换后的摘要，只在内容真的变化时才打。
+// 完整内容只在 debug 级别输出，避免默认日志被长对话刷屏。
 // 只用于请求级别的转换点（消息格式化、prompt 构造），
 // 不用于流式 chunk 路径，避免刷屏。
 function logTransform(label, before, after) {
@@ -50,14 +51,27 @@ function logTransform(label, before, after) {
   const a = after == null ? '' : String(after);
   if (b === a) return;
 
+  tlog('info', `${label} 转换：${summarizeText(b)} -> ${summarizeText(a)}`);
+
+  // 完整对照仅在 debug 级别输出
   tlog(
-    'info',
+    'debug',
     `\n----- ${label} 转换前 (${b.length} 字符) -----\n` +
       (b || '(空)') +
       `\n----- ${label} 转换后 (${a.length} 字符) -----\n` +
       (a || '(空)') +
       `\n----- 结束 -----`
   );
+}
+
+// 把一段文本压成一行摘要：字符数、行数、首行预览
+function summarizeText(text) {
+  const s = text == null ? '' : String(text);
+  if (!s) return '(空)';
+  const lines = s.split('\n').length;
+  const firstLine = s.split('\n').find((l) => l.trim()) || '';
+  const preview = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine;
+  return `${s.length}字符/${lines}行 「${preview}」`;
 }
 
 /* ---------- 工具调用日志格式化 ---------- */

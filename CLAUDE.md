@@ -73,7 +73,7 @@ DeepSeek 网页端 API 只接受一条扁平 `prompt` 字符串加 `chat_session
 
 **`<tool_call>` 终点判定是反向扫描**：`ToolCallBuffer._findToolCallEndStrict()` 从后往前找 `</tool_call>`，取**最后一个**能解析出 JSON（直接解析或经 `balanceBrackets()` + `fixRawNewlinesInJson()` 修复后解析）的位置。所以正文里出现的字面 `</tool_call>` 不会被当成终点误切；代价是中间的可解析片段不会被选中作终点（而非被吞掉），解析范围一直延伸到最后一个合法位置。这看着像 bug，实为有意为之——改之前先想清楚模型会怎么写坏标签。
 
-裸 DSML invoke（没有 ... calls 外层包裹）由 _consumeBareInvokes() 通过 scanDsmlInvokeBlocks() 定位 invoke 块，取最后一个块的 end 作为消费长度（不校验块之间是否连续，中间夹的文本也会被一并消费）。
+裸 DSML invoke（没有 `${PIPE}${PIPE}DSML${PIPE}${PIPE} calls` 外层包裹）由 `_consumeBareInvokes()` 通过 `scanDsmlInvokeBlocks()` 定位 invoke 块，取最后一个块的 `end` 作为消费长度（不校验块之间是否连续，中间夹的文本也会被一并消费）。
 
 ### 模块
 

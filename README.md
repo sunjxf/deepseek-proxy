@@ -43,7 +43,7 @@ npm install
 ```json
 {
   "host": "127.0.0.1",
-  "port": 3000,
+  "port": 3001,
   "upstreamUrl": "https://chat.deepseek.com/api/v0/chat/completion",
   "requestTimeoutMs": 120000,
   "maxRetries": 4,
@@ -89,11 +89,11 @@ Windows 下也可直接运行 `run.bat`，停止用 `stop.bat`。
 启动后终端会打印各端点地址：
 
 ```
-代理服务:   http://127.0.0.1:3000
-配置页面:   http://127.0.0.1:3000/admin
-测试页面:   http://127.0.0.1:3000/test
-OpenAI:    http://127.0.0.1:3000/v1/chat/completions
-Anthropic: http://127.0.0.1:3000/v1/messages
+代理服务:   http://127.0.0.1:3001
+配置页面:   http://127.0.0.1:3001/admin
+测试页面:   http://127.0.0.1:3001/test
+OpenAI:    http://127.0.0.1:3001/v1/chat/completions
+Anthropic: http://127.0.0.1:3001/v1/messages
 配置文件:   <项目根>/config.json
 日志文件:   <项目根>/logs/app-YYYY-MM-DD.log
 PoW 自动求解: 已开启
@@ -113,7 +113,7 @@ LOG_TO_FILE=0 npm start     # 仅输出到控制台，不写文件
 ### OpenAI 兼容
 
 ```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
+curl http://127.0.0.1:3001/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{
     "model": "deepseek-chat",
@@ -128,7 +128,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 import OpenAI from 'openai';
 
 const client = new OpenAI({
-  baseURL: 'http://127.0.0.1:3000/v1',
+  baseURL: 'http://127.0.0.1:3001/v1',
   apiKey: 'not-needed',
 });
 ```
@@ -136,7 +136,7 @@ const client = new OpenAI({
 ### Anthropic 兼容
 
 ```bash
-curl http://127.0.0.1:3000/v1/messages \
+curl http://127.0.0.1:3001/v1/messages \
   -H 'content-type: application/json' \
   -d '{
     "model": "deepseek-chat",
@@ -152,7 +152,7 @@ curl http://127.0.0.1:3000/v1/messages \
 import Anthropic from '@anthropic-ai/sdk';
 
 const client = new Anthropic({
-  baseURL: 'http://127.0.0.1:3000',
+  baseURL: 'http://127.0.0.1:3001',
   apiKey: 'not-needed',
 });
 ```
@@ -187,7 +187,7 @@ const client = new Anthropic({
 ### 配置更新示例
 
 ```bash
-curl -X PUT http://127.0.0.1:3000/admin/api/config \
+curl -X PUT http://127.0.0.1:3001/admin/api/config \
   -H 'content-type: application/json' \
   -d '{"maxRetries": 6, "requestIntervalMs": 3000}'
 ```

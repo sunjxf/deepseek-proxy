@@ -22,8 +22,6 @@ export { setToolLogger } from './log.js';
 // export {
 //   TOOL_CALL_START,
 //   TOOL_CALL_END,
-//   DSML_CALLS_START,
-//   DSML_CALLS_END,
 //   sanitizeText,
 //   stripToolCallResidue,
 // } from './residue.js';

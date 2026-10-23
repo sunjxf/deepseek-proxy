@@ -16,8 +16,6 @@ export { PIPE, PIPE_CLASS, DSML };
 
 export const TOOL_CALL_START = '<tool_call>';
 export const TOOL_CALL_END = '</tool_call>';
-export const DSML_CALLS_START = `<${PIPE}${PIPE}DSML${PIPE}${PIPE} calls>`;
-export const DSML_CALLS_END = `</${PIPE}${PIPE}DSML${PIPE}${PIPE} calls>`;
 
 export const RE_CALLS_START = new RegExp(`<${DSML}\\s*calls\\s*>`);
 export const RE_CALLS_END = new RegExp(`</${DSML}\\s*calls\\s*>`);

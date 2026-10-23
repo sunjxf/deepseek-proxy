@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSeek 本地代理 · 配置</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot" id="health-dot"></span>
+        <h1>DeepSeek 本地代理</h1>
+      </div>
+      <div class="actions">
+        <a class="btn ghost" href="./test.html" target="_blank">测试页</a>
+        <button id="btn-refresh" class="btn ghost" type="button">刷新</button>
+        <button id="btn-test" class="btn ghost" type="button">测试连接</button>
+        <button id="btn-save" class="btn primary" type="button">保存</button>
+      </div>
+    </header>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <main id="main">
+      <section class="card">
+        <h2>运行状态</h2>
+        <div class="stats" id="stats"></div>
+      </section>
+      <form id="form" autocomplete="off" onsubmit="return false"></form>
+      <footer class="foot">
+        <span>配置文件：<code id="cfg-path">—</code></span>
+      </footer>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -37,20 +37,40 @@ const LOG_FILE =
 const LOG_TO_FILE = String(process.env.LOG_TO_FILE ?? '1') !== '0';
 // 单文件大小上限（默认 50MB），超过后轮转为 app.log.1
 const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES) || 50 * 1024 * 1024;
+// 日志保留天数：按天切分日志文件，并删除超过该天数的旧文件。0 表示不清理
+const LOG_KEEP_DAYS = Number(process.env.LOG_KEEP_DAYS ?? 2) || 0;
+
+const LOG_DIR = path.dirname(LOG_FILE);
+const LOG_BASE = path.basename(LOG_FILE);
+const LOG_EXT = path.extname(LOG_FILE);
+const LOG_STEM = LOG_BASE.slice(0, LOG_BASE.length - LOG_EXT.length);
 
 let logStream = null;
 let logBytes = 0;
+let logDay = '';
+
+// 本地日期 YYYY-MM-DD，用于按天切分文件名
+function localDay(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// 当天日志文件名：app.log -> app-2026-10-24.log
+function dayLogFile(day = localDay()) {
+  return path.join(LOG_DIR, `${LOG_STEM}-${day}${LOG_EXT}`);
+}
 
 function openLogStream() {
   if (!LOG_TO_FILE) return null;
+  const file = dayLogFile(logDay);
   try {
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     try {
-      logBytes = fs.statSync(LOG_FILE).size;
+      logBytes = fs.statSync(file).size;
     } catch {
       logBytes = 0;
     }
-    const s = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+    const s = fs.createWriteStream(file, { flags: 'a' });
     s.on('error', (e) => {
       // 写文件失败不能让服务崩溃，降级为仅 console
       console.error('[log] 日志文件写入失败，已降级为仅控制台：', e.message);
@@ -63,15 +83,60 @@ function openLogStream() {
   }
 }
 
-logStream = openLogStream();
+// 删除超过保留天数的日志文件（只动本服务命名的 app-YYYY-MM-DD.log / .log.N）
+function cleanupOldLogs() {
+  if (!LOG_TO_FILE || LOG_KEEP_DAYS <= 0) return;
+  const cutoff = Date.now() - LOG_KEEP_DAYS * 24 * 60 * 60 * 1000;
+  const re = new RegExp(
+    `^${LOG_STEM.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d{4}-\\d{2}-\\d{2})${LOG_EXT.replace(/\./g, '\\.')}(\\.\\d+)?$`
+  );
+  let names;
+  try {
+    names = fs.readdirSync(LOG_DIR);
+  } catch {
+    return;
+  }
+  let removed = 0;
+  for (const name of names) {
+    const m = re.exec(name);
+    if (!m) continue;
+    const dayEnd = new Date(`${m[1]}T23:59:59.999`).getTime();
+    if (!Number.isFinite(dayEnd) || dayEnd >= cutoff) continue;
+    try {
+      fs.rmSync(path.join(LOG_DIR, name), { force: true });
+      removed++;
+    } catch {
+      /* 忽略单个文件删除失败 */
+    }
+  }
+  if (removed > 0) {
+    console.log(`[log] 已清理 ${removed} 个超过 ${LOG_KEEP_DAYS} 天的日志文件`);
+  }
+}
+
+// 按天切换日志文件
+function ensureLogDay() {
+  const day = localDay();
+  if (day === logDay && logStream) return;
+  try {
+    logStream?.end();
+  } catch {
+    /* 忽略 */
+  }
+  logDay = day;
+  logStream = openLogStream();
+  cleanupOldLogs();
+}
 
 function rotateIfNeeded() {
   if (!logStream || logBytes < LOG_MAX_BYTES) return;
   try {
     logStream.end();
-    const backup = `${LOG_FILE}.1`;
+    const base = dayLogFile(logDay);
+    // 大小轮转：app-YYYY-MM-DD.log -> app-YYYY-MM-DD.log.1，已有则删除
+    const backup = `${base}.1`;
     fs.rmSync(backup, { force: true });
-    fs.renameSync(LOG_FILE, backup);
+    fs.renameSync(base, backup);
     logBytes = 0;
     logStream = openLogStream();
   } catch (e) {
@@ -80,6 +145,8 @@ function rotateIfNeeded() {
 }
 
 function writeToFile(line) {
+  if (!LOG_TO_FILE) return;
+  ensureLogDay();
   if (!logStream) return;
   try {
     logStream.write(line);
@@ -88,6 +155,18 @@ function writeToFile(line) {
   } catch {
     /* 忽略：日志失败不影响主流程 */
   }
+}
+
+logDay = localDay();
+logStream = openLogStream();
+cleanupOldLogs();
+if (LOG_KEEP_DAYS > 0) {
+  // 每小时检查一次，处理跨天切换与过期清理（unref 不阻止进程退出）
+  const timer = setInterval(() => {
+    ensureLogDay();
+    cleanupOldLogs();
+  }, 60 * 60 * 1000);
+  timer.unref?.();
 }
 
 // 日期时间（本地时区）YYYY-MM-DD HH:mm:ss.SSS

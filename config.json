@@ -6,7 +6,7 @@
   "maxRetries": 4,
   "retryBaseDelayMs": 1000,
   "maxRequestsPerMinute": 20,
-  "requestIntervalMs": 2,
+  "requestIntervalMs": 5,
   "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
   "powEnabled": true,
   "powChallengeUrl": "https://chat.deepseek.com/api/v0/chat/create_pow_challenge",

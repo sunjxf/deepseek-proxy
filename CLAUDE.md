@@ -10,13 +10,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm install          # 安装依赖（express、@rezaparsian/deepseek-pow-solver）
-npm start            # 启动服务（node server.js）
+npm start            # 启动服务（node src/index.js）
 ```
 
 本仓库没有测试运行器、linter 或构建步骤。修改文件后做语法校验：
 
 ```bash
-node --check server.js   # config.js、pow.js、tools.js、public/app.js 同理
+node --check src/index.js   # src/ 下其余模块、public/config/app.js、public/test/app.js 同理
 ```
 
 启动后默认端点：
@@ -53,22 +53,30 @@ DeepSeek 网页端 API 只接受一条扁平 `prompt` 字符串加 `chat_session
 
 没有原生 function-calling 通道。工具通过 `formatToolsInstruction()` 写进 prompt，模型输出再由 `ToolCallBuffer` 扫描出调用标记。解析器刻意容忍畸形模型输出：两种标记方言（`<tool_call>` JSON 与 DeepSeek 原生 DSML，竖线全角 `｜` / 半角 `|` 混用）、括号缺失或多写（`balanceBrackets()`）、空白变体、跨 chunk 截断、未闭合标签。非调用文本经 `stripToolCallResidue()` 清掉残留标记后放行。
 
-改 `tools.js` 时必须保持两条不变量：
+改 `src/tools/` 时必须保持两条不变量：
 
 1. **工具标记绝不能泄漏进 prompt 历史。** `formatUserContent()` 在消息内容回到 prompt 前做清洗；否则模型会看到自己写坏的标记并模仿。
 2. **不要强制转换模型未声明的类型。** `coerceDsmlValue()` 默认保留字符串，只有模型显式写了 `type="number"` 之类才转换（所以 `"007"` 仍是字符串）。
 
 ### 模块
 
-- **`server.js`** —— 所有服务端逻辑：日志（`makeLog`/`writeToFile`/`rotateIfNeeded`）、限速（`throttle`、`waitForInterval`）、重试（`fetchWithRetry`）、上游请求构造（`buildUpstreamHeaders`、`forwardToDeepSeek`）、SSE 解析（`iterateDeepSeekEvents`、`extractDeepSeekText`）、协议适配（`streamAsOpenAI`、`streamAsAnthropic`、`collectDeepSeek`）、admin API、路由注册。文件大但刻意保持扁平。
-- **`config.js`** —— 配置加载/校验/持久化。环境变量覆盖文件值。`updateConfig()` 执行补丁规则（`null` 清空，敏感字段的 `""` 表示"不修改"）。通过临时文件 + rename 原子写入，权限 `0600`。
-- **`pow.js`** —— 获取 PoW challenge 并用懒初始化的 WASM 求解器求解；结果 base64 JSON 放进 `x-ds-pow-response` 头。PoW 失败非致命：请求会不带该头继续。
-- **`tools.js`** —— prompt 构造与工具调用解析（见上）。
+代码在 `src/` 下按职责分层，入口是 `src/index.js`：
+
+- **`src/index.js`** —— 入口：`startServer()` 加载配置并 `listen`；被 import 时不自动启动。
+- **`src/app.js`** —— `createApp()`：中间件（`express.json` 50mb）、`set*Logger()` 注入、路由注册、`/admin` 静态资源。
+- **`src/logger.js`** —— `makeLog()` 生成带作用域/请求 ID 的 logger；`writeToFile()` + `rotateIfNeeded()` 落盘、按天切分、大小轮转、过期清理；`formatExchange()` 打印清洗前后对照。
+- **`src/stats.js`** —— 运行统计与 `recordError()`。
+- **`src/config.js`** —— 配置加载/校验/持久化。环境变量覆盖文件值。`updateConfig()` 执行补丁规则（`null` 清空，敏感字段的 `""` 表示"不修改"）。通过临时文件 + rename 原子写入，权限 `0600`。`CONFIG_PATH` 默认指向项目根的 `config.json`。
+- **`src/pow.js`** —— 获取 PoW challenge 并用懒初始化的 WASM 求解器求解；结果 base64 JSON 放进 `x-ds-pow-response` 头。PoW 失败非致命：请求会不带该头继续。
+- **`src/routes/`** —— 四个端点：`openai.js`、`anthropic.js`、`native.js`、`admin.js`，各导出 `registerXxxRoutes(app)`。
+- **`src/upstream/`** —— `client.js`（`buildUpstreamHeaders`、`fetchWithRetry`、`forwardToDeepSeek`）、`sse.js`（`iterateDeepSeekEvents`、`extractDeepSeekText`、`collectDeepSeek`）、`throttle.js`（`throttle`、`waitForInterval`）。
+- **`src/adapters/`** —— `openai.js`（`streamAsOpenAI`）、`anthropic.js`（`streamAsAnthropic`）、`usage.js`（token 估算）。
+- **`src/tools/`** —— 工具调用支持（见上）：`index.js` 聚合导出，`residue.js` 正则常量与残留清洗，`parse.js` JSON/DSML 解析，`buffer.js` `ToolCallBuffer`，`prompt.js` prompt 构造，`ids.js` ID 生成，`log.js` 日志。
 - **`public/`** —— `/admin` 下的静态配置页与对话测试页。
 
 ### 日志约定
 
-所有模块走同一日志接口 —— `error` / `warn` / `info` / `debug`，带作用域和可选结构化 `extra` 对象。`config.js`、`pow.js`、`tools.js` 导出 `set*Logger()`，由 `server.js` 启动时注入统一 logger；新增模块时沿用该模式。转储模型输出的日志会打印 **清洗前 vs 清洗后** 对照（`formatRawClean`），便于发现标记剥离的 bug。
+所有模块走同一日志接口 —— `error` / `warn` / `info` / `debug`，带作用域和可选结构化 `extra` 对象。`config.js`、`pow.js`、`tools/index.js`、`upstream/throttle.js` 导出 `set*Logger()`，由 `src/app.js` 启动时注入统一 logger；新增模块时沿用该模式。转储模型输出的日志会打印 **清洗前 vs 清洗后** 对照（`formatExchange()`），便于发现标记剥离的 bug。
 
 ### 配置
 

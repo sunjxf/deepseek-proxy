@@ -27,6 +27,7 @@
 ### 环境要求
 
 - Node.js 18+（依赖内置 `fetch`、`AbortController`、`Readable.fromWeb`）
+- 运行时依赖：`express`（HTTP 框架）、`@rezaparsian/deepseek-pow-solver`（WASM PoW 求解器）
 - 建议在 Windows / macOS / Linux 本地运行，**不要暴露到公网**
 
 ### 安装
@@ -80,8 +81,10 @@ npm install
 ### 启动
 
 ```bash
-npm start
+npm start          # 等价于 node src/index.js
 ```
+
+Windows 下也可直接运行 `run.bat`，停止用 `stop.bat`。
 
 启动后终端会打印各端点地址：
 
@@ -92,8 +95,15 @@ npm start
 OpenAI:    http://127.0.0.1:3000/v1/chat/completions
 Anthropic: http://127.0.0.1:3000/v1/messages
 配置文件:   <项目根>/config.json
-日志文件:   <项目根>/logs/app.log
+日志文件:   <项目根>/logs/app-YYYY-MM-DD.log
 PoW 自动求解: 已开启
+```
+
+调试时可在启动前设置环境变量：
+
+```bash
+LOG_LEVEL=debug npm start   # 输出所有调试日志
+LOG_TO_FILE=0 npm start     # 仅输出到控制台，不写文件
 ```
 
 ---
@@ -168,9 +178,11 @@ const client = new Anthropic({
 | `GET` | `/admin/api/config` | 读取当前配置与运行统计 |
 | `PUT` | `/admin/api/config` | 更新配置并持久化 |
 | `POST` | `/admin/api/test` | 测试上游连通性 |
-| `GET` | `/admin` | 可视化配置页面 |
-| `GET` | `/test` | 对话测试页面（302 → `/admin/test.html`） |
-| `GET` | `/` | 302 → `/admin/` |
+| `GET` | `/admin` | 302 → `/admin/config/`（配置页） |
+| `GET` | `/admin/config/` | 可视化配置页面（静态） |
+| `GET` | `/test` | 302 → `/admin/test/`（对话测试页） |
+| `GET` | `/admin/test/` | 对话测试页面（静态） |
+| `GET` | `/` | 302 → `/admin/` → `/admin/config/` |
 
 ### 配置更新示例
 
@@ -219,39 +231,78 @@ curl -X PUT http://127.0.0.1:3000/admin/api/config \
 
 ```
 .
-├── server.js      # Express 服务：路由、限速、重试、SSE 转换、协议适配、日志
-├── config.js      # 配置加载 / 校验 / 持久化（含环境变量覆盖）
-├── pow.js         # PoW challenge 获取与求解，生成 x-ds-pow-response
-├── tools.js       # 工具调用支持：Prompt 构造、流式标签缓冲、DSML/JSON 解析
-├── config.json    # 运行时配置（含凭证，权限 0600，勿提交到版本库）
+├── src/
+│   ├── index.js        # 入口：startServer() + 条件 listen
+│   ├── app.js          # createApp()：中间件、日志注入、路由注册、静态资源
+│   ├── logger.js       # 日志：makeLog / writeToFile / rotateIfNeeded / formatExchange
+│   ├── stats.js        # 运行统计与 recordError
+│   ├── config.js       # 配置加载 / 校验 / 持久化（含环境变量覆盖）
+│   ├── pow.js          # PoW challenge 获取与求解，生成 x-ds-pow-response
+│   ├── routes/
+│   │   ├── openai.js     # OpenAI 兼容端点 /v1/chat/completions
+│   │   ├── anthropic.js  # Anthropic 兼容端点 /v1/messages
+│   │   ├── native.js     # DeepSeek 原生端点 /api/v0/chat/completion 透传
+│   │   └── admin.js      # 配置读写与上游连通性测试接口
+│   ├── upstream/
+│   │   ├── client.js     # 上游请求：请求头构造、fetchWithRetry、forwardToDeepSeek
+│   │   ├── sse.js        # DeepSeek SSE 解析：iterateDeepSeekEvents / extractDeepSeekText / collectDeepSeek
+│   │   └── throttle.js   # 两层限速：throttle（每分钟计数）+ waitForInterval（最小间隔）
+│   ├── adapters/
+│   │   ├── openai.js     # streamAsOpenAI：转为 OpenAI 流式事件（含 tool_calls 状态机）
+│   │   ├── anthropic.js  # streamAsAnthropic：转为 Anthropic 流式事件（含 tool_use 状态机）
+│   │   └── usage.js      # token 估算，填充 usage 字段
+│   └── tools/
+│       ├── index.js      # tools 层聚合入口
+│       ├── prompt.js     # Prompt 构造：buildPromptFromMessages / formatToolsInstruction
+│       ├── buffer.js     # ToolCallBuffer：流式工具标签缓冲与切分
+│       ├── parse.js      # 工具调用解析：JSON 与 DSML、balanceBrackets、fixRawNewlinesInJson、coerceDsmlValue
+│       ├── residue.js    # 工具标签正则常量与 stripToolCallResidue 残留清洗
+│       ├── ids.js        # 工具调用 ID 生成
+│       └── log.js        # tools 层日志
+├── config.json         # 运行时配置（含凭证，权限 0600，勿提交到版本库）
 ├── logs/
-│   └── app.log    # 运行日志（已 gitignore）
+│   └── app-YYYY-MM-DD.log  # 运行日志（已 gitignore）
 └── public/
-    ├── index.html # 配置管理页
-    ├── app.js     # 配置页逻辑（表单分组、敏感字段掩码）
-    ├── style.css  # 配置页样式
-    └── test.html  # 对话测试页
+    ├── common/
+    │   └── base.css      # 两页共用的 CSS 变量与原子样式（按钮、圆点、代码块）
+    ├── config/
+    │   ├── index.html    # 配置管理页
+    │   ├── app.js        # 配置页逻辑（表单分组、敏感字段掩码）
+    │   └── style.css     # 配置页布局样式
+    └── test/
+        ├── index.html    # 对话测试页
+        ├── app.js        # 测试页逻辑（SSE 解析、消息渲染）
+        └── style.css     # 测试页布局样式
 ```
 
 ### 核心模块说明
 
-**`server.js`**
-- 日志系统：`makeLog()` 生成带作用域/请求 ID 的 logger，`writeToFile()` + `rotateIfNeeded()` 负责落盘与轮转
+**`src/index.js` / `src/app.js`**
+- `startServer()` —— 加载配置、`listen`，打印启动端点信息
+- `createApp()` —— 组装中间件、注入模块 logger、注册路由；被 import 时不监听端口
+
+**`src/logger.js`**
+- `makeLog()` 生成带作用域/请求 ID 的 logger，`writeToFile()` + `rotateIfNeeded()` 负责落盘、按天切分与大小轮转
+
+**`src/upstream/`**
 - `throttle()` / `waitForInterval()` —— 两层限速：每分钟窗口计数 + 请求间最小间隔（Promise 链排队，保证并发下间隔有效）
 - `fetchWithRetry()` —— 指数退避 + 抖动，最大 16s，支持 `Retry-After`
 - `extractDeepSeekText()` —— 从 DeepSeek 的 `BATCH` / `fragments` / `APPEND` 事件中还原文本
-- `streamAsOpenAI()` / `streamAsAnthropic()` —— 将上游 SSE 转换为对应协议的流式事件（含 `tool_calls` / `tool_use` 状态机）
 - `collectDeepSeek()` —— 非流式场景下聚合完整响应
 
-**`tools.js`**
+**`src/adapters/`**
+- `streamAsOpenAI()` / `streamAsAnthropic()` —— 将上游 SSE 转换为对应协议的流式事件（含 `tool_calls` / `tool_use` 状态机）
+
+**`src/tools/`**
 - `buildPromptFromMessages()` —— 把 OpenAI / Anthropic 的 messages 结构压平成 DeepSeek 单条 prompt
 - `formatToolsInstruction()` —— 生成工具清单与调用格式说明，注入 prompt
-- `ToolCallBuffer` —— 流式增量解析器，识别 `<tool_call>` 与 DSML 两种格式，容忍跨 chunk 截断、全角/半角竖线混用、缺失外层包裹等异常
+- `ToolCallBuffer` —— 流式增量解析器，识别 `<tool_call>` 与 DSML 两种格式，容忍跨 chunk 截断、全角/半角竖线混用、缺失外层包裹等异常；用字符串状态机保证 content 里的标签字面量不被误切
 - `balanceBrackets()` —— 字符串感知的单遍括号修复，处理模型少写/多写括号、字符串未闭合
+- `fixRawNewlinesInJson()` —— 修复 JSON 字符串内的裸换行，避免 `JSON.parse` 失败
 - `coerceDsmlValue()` —— 按模型显式声明的类型转换参数，默认保留字符串（避免 `"007"` 被误转数字）
 - `summarizeArgs()` —— 把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
 
-**`pow.js`**
+**`src/pow.js`**
 - `fetchChallenge()` —— 调用 `create_pow_challenge` 获取 challenge
 - `solveAndBuildHeader()` —— WASM 求解后 base64 编码，作为 `x-ds-pow-response` 发送
 

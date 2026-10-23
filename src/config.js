@@ -14,14 +14,15 @@ export function setConfigLogger(fn) {
   if (typeof fn === 'function') clog = fn;
 }
 
+// 配置文件固定在项目根目录（src/ 的上一级），避免迁移后读写位置变化
 export const CONFIG_PATH =
-  process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
+  process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json');
 
 export const SENSITIVE_FIELDS = ['authorization'];
 
 const DEFAULTS = {
   host: '127.0.0.1',
-  port: 3000,
+  port: 3001,
   upstreamUrl: 'https://chat.deepseek.com/api/v0/chat/completion',
   requestTimeoutMs: 120000,
   maxRetries: 4,

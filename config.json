@@ -1,6 +1,6 @@
 {
   "host": "127.0.0.1",
-  "port": 3000,
+  "port": 3001,
   "upstreamUrl": "https://chat.deepseek.com/api/v0/chat/completion",
   "requestTimeoutMs": 120000,
   "maxRetries": 4,
@@ -11,6 +11,6 @@
   "powEnabled": true,
   "powChallengeUrl": "https://chat.deepseek.com/api/v0/chat/create_pow_challenge",
   "powTargetPath": "/api/v0/chat/completion",
-  "chatSessionId": "307e78f8-3d64-4438-b7c3-31b0b9abb657",
+  "chatSessionId": "0251f9fc-b18f-42d9-b974-abcfd06cc529",
   "authorization": "Bearer MwDqud0ppELIJQChYKeHOu8HPh7785BwVtxV0kMkkwNEvzsby4eBxRf+KRCiWPiP"
 }

@@ -1,152 +1,14 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>代理测试 · DeepSeek</title>
-  <style>
-    :root {
-      --bg: #0f1115;
-      --panel: #171a21;
-      --panel-2: #1e222b;
-      --border: #2a2f3a;
-      --text: #e6e9ef;
-      --muted: #8b94a7;
-      --accent: #4f8cff;
-      --danger: #ff5f6d;
-      --ok: #33d17a;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-    body { display: flex; flex-direction: column; }
+/**
+ * app.js - 对话测试页逻辑
+ *
+ * 从原 test.html 内联 <script> 原样搬出。功能全部保留：
+ *   - session 输入与 sessionStorage 持久化
+ *   - 从配置页读取默认 chat_session_id
+ *   - thinking_enabled / search_enabled 开关
+ *   - 原始 SSE 展示
+ *   - SSE 增量解析与流式渲染
+ */
 
-    .topbar {
-      flex: 0 0 auto;
-      padding: 10px 14px;
-      background: var(--panel);
-      border-bottom: 1px solid var(--border);
-      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    }
-    .topbar .field { display: flex; gap: 6px; align-items: center; flex: 1 1 auto; min-width: 0; }
-    .topbar label { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
-    .topbar input[type="text"] {
-      background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-      border-radius: 7px; padding: 5px 8px; font-size: 12.5px; outline: none;
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      flex: 1 1 auto; min-width: 0;
-    }
-    .topbar input:focus { border-color: var(--accent); }
-    .switch { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
-    .switch input { accent-color: var(--accent); }
-    .btn {
-      border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
-      padding: 5px 12px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
-      white-space: nowrap;
-    }
-    .btn:hover { border-color: #3a4150; background: #232833; }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .btn.primary:hover { background: #6aa0ff; border-color: #6aa0ff; }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
-
-    .status {
-      font-size: 12px; color: var(--muted);
-      padding: 4px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
-    }
-    .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: middle; }
-    .status .dot.ok { background: var(--ok); }
-    .status .dot.err { background: var(--danger); }
-
-    .chat { flex: 1 1 auto; overflow-y: auto; padding: 20px 16px; }
-    .chat-inner { max-width: 820px; margin: 0 auto; }
-    .empty { color: var(--muted); text-align: center; margin-top: 60px; font-size: 13px; }
-
-    .msg { margin-bottom: 18px; display: flex; }
-    .msg.user { justify-content: flex-end; }
-    .msg .wrap { max-width: 88%; min-width: 0; }
-    .role { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
-    .msg.user .role { text-align: right; }
-    .bubble {
-      background: var(--panel); border: 1px solid var(--border);
-      padding: 10px 13px; border-radius: 10px;
-      white-space: pre-wrap; word-break: break-word;
-      font-size: 14px; line-height: 1.7;
-    }
-    .msg.user .bubble { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .bubble.error { border-color: var(--danger); color: var(--danger); }
-    .bubble.pending::after {
-      content: ''; display: inline-block; width: 8px; height: 8px;
-      background: var(--muted); border-radius: 50%; margin-left: 6px;
-      animation: pulse 1s infinite;
-    }
-    @keyframes pulse { 0%,100% { opacity: .3 } 50% { opacity: 1 } }
-
-    .raw-block { margin-top: 8px; }
-    .raw-block summary { font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
-    .raw {
-      margin-top: 6px; max-height: 260px; overflow: auto;
-      background: #0b0d11; border: 1px solid var(--border); border-radius: 8px;
-      padding: 8px 10px; font-family: ui-monospace, Menlo, Consolas, monospace;
-      font-size: 11.5px; color: #b9c1d0; white-space: pre-wrap; word-break: break-all;
-    }
-
-    .composer {
-      flex: 0 0 auto;
-      border-top: 1px solid var(--border); background: var(--panel);
-      padding: 10px 14px;
-    }
-    .composer .inner { max-width: 820px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
-    .composer textarea {
-      flex: 1 1 auto; resize: none; min-height: 42px; max-height: 180px;
-      background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-      border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none;
-      font-family: inherit; line-height: 1.5;
-    }
-    .composer textarea:focus { border-color: var(--accent); }
-    .composer .btn.primary { padding: 10px 18px; border-radius: 10px; font-size: 13px; }
-    .tip { color: var(--muted); font-size: 11.5px; text-align: center; margin-top: 6px; }
-  </style>
-</head>
-<body>
-
-  <div class="topbar">
-    <div class="field">
-      <label for="session-input">chat_session_id</label>
-      <input id="session-input" type="text" placeholder="从配置页读取，或手动填写" autocomplete="off" />
-    </div>
-    <button id="btn-clear" class="btn" type="button">清空</button>
-    <label class="switch" title="在每条回复下显示上游原始 SSE">
-      <input id="raw-switch" type="checkbox" /> 显示原始
-    </label>
-  </div>
-
-  <div class="status">
-    <span class="dot" id="dot"></span><span id="status-text">就绪</span>
-  </div>
-
-  <div class="chat" id="chat">
-    <div class="chat-inner" id="chat-inner">
-      <div class="empty" id="empty">
-        输入一句话开始测试。<br/>
-        请求会经本地代理转发到上游。<br/>
-        <span style="color:#5c6678">chat_session_id 会从配置页自动读取，也可手动修改</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="composer">
-    <div class="inner">
-      <textarea id="prompt" rows="1" placeholder="输入内容，Enter 发送，Shift+Enter 换行"></textarea>
-      <button id="btn-send" class="btn primary" type="button">发送</button>
-    </div>
-    <div class="tip">
-      <label class="switch"><input id="thinking-switch" type="checkbox" /> thinking_enabled</label>
-      &nbsp;&nbsp;
-      <label class="switch"><input id="search-switch" type="checkbox" /> search_enabled</label>
-    </div>
-  </div>
-
-<script>
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -158,6 +20,12 @@
   };
 
   const SESSION_STORE = 'ds_session_id';
+  // 用户手动改过输入框后，不再用配置值覆盖
+  const SESSION_EDITED = 'ds_session_edited';
+
+  function isSessionEdited() {
+    return sessionStorage.getItem(SESSION_EDITED) === '1';
+  }
 
   /* ---------- 初始化 UI ---------- */
 
@@ -166,6 +34,7 @@
   $('session-input').addEventListener('input', () => {
     state.sessionId = $('session-input').value.trim();
     sessionStorage.setItem(SESSION_STORE, state.sessionId);
+    sessionStorage.setItem(SESSION_EDITED, '1');
   });
 
   $('raw-switch').addEventListener('change', (e) => {
@@ -202,7 +71,8 @@
       const res = await fetch('/admin/api/config');
       const data = await res.json();
       const cfgId = data?.config?.chatSessionId || '';
-      if (cfgId && !state.sessionId) {
+      // 配置值优先，除非用户手动编辑过输入框
+      if (cfgId && !isSessionEdited()) {
         state.sessionId = cfgId;
         $('session-input').value = cfgId;
         sessionStorage.setItem(SESSION_STORE, cfgId);
@@ -521,6 +391,3 @@
 
   loadConfig();
 })();
-</script>
-</body>
-</html>

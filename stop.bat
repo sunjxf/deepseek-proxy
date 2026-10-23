@@ -43,7 +43,7 @@ exit /b 0
 :FALLBACK
 rem 没 PID 文件时，用命令行特征匹配（只在唯一命中时才杀）
 set "FOUND="
-for /f "tokens=2" %%P in ('wmic process where "name='node.exe'" get ProcessId^,CommandLine /format:list 2^>nul ^| findstr /i "server.js"') do set "FOUND=%%P"
+for /f "tokens=2" %%P in ('wmic process where "name='node.exe'" get ProcessId^,CommandLine /format:list 2^>nul ^| findstr /i "src\\index.js"') do set "FOUND=%%P"
 if not defined FOUND (
   echo [提示] 没有找到运行中的代理服务。
   exit /b 0

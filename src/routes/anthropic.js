@@ -1,0 +1,149 @@
+/**
+ * anthropic.js - Anthropic 兼容端点
+ *
+ * POST /v1/messages
+ * 原样取自 server.js 的同名路由。
+ */
+
+import { getConfig } from '../config.js';
+import { forwardToDeepSeek } from '../upstream/client.js';
+import { throttle, waitForInterval } from '../upstream/throttle.js';
+import { collectDeepSeek } from '../upstream/sse.js';
+import { streamAsAnthropic } from '../adapters/anthropic.js';
+import { makeUsage } from '../adapters/usage.js';
+import { stats, recordError } from '../stats.js';
+import { makeLog, newRequestId, dumpBody, preview } from '../logger.js';
+import { formatExchange } from '../logger.js';
+import {
+  buildPromptFromMessages,
+  extractSystemText,
+  formatToolsInstruction,
+  newMessageId,
+  newToolUseId,
+} from '../tools/index.js';
+
+const log = makeLog('proxy');
+
+export function registerAnthropicRoutes(app) {
+  app.post('/v1/messages', async (req, res) => {
+    const cfg = getConfig();
+    const rid = newRequestId();
+    const lg = makeLog('anthropic', rid);
+    stats.totalRequests += 1;
+    stats.lastRequestAt = Date.now();
+    lg.debug('收到请求', {
+      model: req.body?.model,
+      stream: req.body?.stream !== false,
+      messages: req.body?.messages?.length ?? 0,
+      tools: req.body?.tools?.length ?? 0,
+      body: dumpBody(req.body),
+    });
+
+    try {
+      await throttle();
+      await waitForInterval();
+
+      const prompt = buildPromptFromMessages(
+        req.body.messages,
+        extractSystemText(req.body.system),
+        formatToolsInstruction(req.body.tools)
+      );
+
+      if (!prompt) {
+        res.status(400).json({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'no user message found',
+          },
+        });
+        return;
+      }
+
+      const stream = req.body.stream !== false;
+
+      const upstream = await forwardToDeepSeek(
+        cfg,
+        req,
+        prompt,
+        {
+          thinking: !!req.body.thinking,
+          search: !!req.body.search,
+        },
+        lg
+      );
+
+      if (!upstream) throw new Error('上游无响应');
+
+      if (!upstream.ok) {
+        const text = await upstream.text();
+        stats.failedRequests += 1;
+        recordError(`上游 HTTP ${upstream.status}`);
+        lg.warn('上游返回错误', {
+          status: upstream.status,
+          body: preview(text, 300),
+        });
+        res.status(upstream.status).json({
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: text.slice(0, 800) || `upstream ${upstream.status}`,
+          },
+        });
+        return;
+      }
+
+      stats.successRequests += 1;
+
+      if (stream) {
+        res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+        res.setHeader('cache-control', 'no-cache, no-transform');
+        res.setHeader('connection', 'keep-alive');
+        res.setHeader('x-accel-buffering', 'no');
+        lg.info('开始流式输出', { model: req.body.model });
+        await streamAsAnthropic(upstream, res, req.body.model, lg, prompt);
+      } else {
+        const { text, toolCalls, rawAll } = await collectDeepSeek(upstream, lg);
+
+        const content = [];
+        if (text) content.push({ type: 'text', text });
+
+        const toolUsesOut = toolCalls.map((call) => ({
+          type: 'tool_use',
+          id: newToolUseId(),
+          name: call.name,
+          input: call.arguments ?? {},
+        }));
+        for (const tu of toolUsesOut) content.push(tu);
+
+        lg.info('anthropic-collect', formatExchange(rawAll, toolUsesOut, text));
+
+        res.json({
+          id: newMessageId(),
+          type: 'message',
+          role: 'assistant',
+          model: req.body.model || 'deepseek-chat',
+          content,
+          stop_reason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+          stop_sequence: null,
+          usage: {
+            input_tokens: makeUsage(prompt, '').prompt_tokens,
+            output_tokens: makeUsage('', text).completion_tokens,
+          },
+        });
+      }
+    } catch (e) {
+      stats.failedRequests += 1;
+      const msg = e.name === 'AbortError' ? '请求超时' : e.message;
+      recordError(msg);
+      if (!res.headersSent) {
+        res.status(502).json({
+          type: 'error',
+          error: { type: 'api_error', message: msg },
+        });
+      } else {
+        res.end();
+      }
+    }
+  });
+}

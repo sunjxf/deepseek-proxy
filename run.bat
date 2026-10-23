@@ -60,7 +60,7 @@ set "LOG_LEVEL=%LOGLEVEL%"
 rem ---------- 前台模式 ----------
 if "%FOREGROUND%"=="1" (
   echo [信息] 前台启动，LOG_LEVEL=%LOG_LEVEL%
-  node server.js
+  node src\index.js
   exit /b %errorlevel%
 )
 
@@ -69,7 +69,7 @@ echo [信息] 后台启动中，LOG_LEVEL=%LOG_LEVEL%
 
 rem 用 PowerShell 的 Start-Process 无窗口启动，并把 stdout/stderr 重定向到文件
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p = Start-Process -FilePath 'node' -ArgumentList 'server.js' -WorkingDirectory '%ROOT%' -WindowStyle Hidden -PassThru -RedirectStandardOutput '%OUT_LOG%' -RedirectStandardError '%OUT_LOG%.err'; $p.Id" > "%PID_FILE%.tmp" 2>nul
+  "$p = Start-Process -FilePath 'node' -ArgumentList 'src\index.js' -WorkingDirectory '%ROOT%' -WindowStyle Hidden -PassThru -RedirectStandardOutput '%OUT_LOG%' -RedirectStandardError '%OUT_LOG%.err'; $p.Id" > "%PID_FILE%.tmp" 2>nul
 
 set /p NEW_PID=<"%PID_FILE%.tmp"
 del /f /q "%PID_FILE%.tmp" >nul 2>nul

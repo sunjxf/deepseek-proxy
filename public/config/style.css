@@ -1,27 +1,9 @@
-:root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e6e9ef;
-  --muted: #8b94a7;
-  --accent: #4f8cff;
-  --accent-hover: #6aa0ff;
-  --danger: #ff5f6d;
-  --ok: #33d17a;
-  --warn: #ffb454;
-}
-
-* { box-sizing: border-box; }
-
-html, body {
-  margin: 0;
-  padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", sans-serif;
-}
+/**
+ * style.css - 配置页样式
+ *
+ * 变量、按钮、圆点、code 来自 ../common/base.css。
+ * 这里只放配置页自己的布局（居中卡片、表单栅格、状态面板、toast）。
+ */
 
 .page {
   max-width: 960px;
@@ -42,38 +24,7 @@ html, body {
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand h1 { font-size: 18px; font-weight: 600; margin: 0; }
 
-.dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--muted);
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
-}
-.dot.ok { background: var(--ok); }
-.dot.err { background: var(--danger); }
-
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* 按钮 */
-.btn {
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  padding: 7px 14px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: 0.15s;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-}
-.btn:hover { border-color: #3a4150; background: #232833; }
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.btn.ghost { background: transparent; }
 
 .mini {
   border: 1px solid var(--border);
@@ -201,13 +152,6 @@ input[type="checkbox"] {
 .toast.error { border-color: rgba(255, 95, 109, 0.5); color: var(--danger); }
 
 .foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
-
-code {
-  background: var(--panel-2);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-}
 
 @media (max-width: 680px) {
   .grid { grid-template-columns: 1fr; }

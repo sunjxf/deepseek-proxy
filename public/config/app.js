@@ -1,3 +1,9 @@
+/**
+ * app.js - 配置页逻辑
+ *
+ * GROUPS 驱动表单渲染，SENSITIVE 字段（authorization）按掩码/清除语义处理。
+ */
+
 const SENSITIVE = new Set(['authorization']);
 
 const GROUPS = [

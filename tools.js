@@ -39,6 +39,26 @@ function tp(text, len = 160) {
   return s.length > len ? s.slice(0, len) + `…(${s.length}字符)` : s;
 }
 
+/* ---------- 转换前后日志 ---------- */
+
+// 统一输出转换前/转换后的完整内容（不截断），只在内容真的变化时才打。
+// 只用于请求级别的转换点（消息格式化、prompt 构造），
+// 不用于流式 chunk 路径，避免刷屏。
+function logTransform(label, before, after) {
+  const b = before == null ? '' : String(before);
+  const a = after == null ? '' : String(after);
+  if (b === a) return;
+
+  tlog(
+    'info',
+    `\n----- ${label} 转换前 (${b.length} 字符) -----\n` +
+      (b || '(空)') +
+      `\n----- ${label} 转换后 (${a.length} 字符) -----\n` +
+      (a || '(空)') +
+      `\n----- 结束 -----`
+  );
+}
+
 // 全角竖线 U+FF5C，DeepSeek 的 DSML 使用它
 const PIPE = '\uFF5C';
 
@@ -117,17 +137,13 @@ function isPartialDsmlCallsStart(s) {
  *   - < 与 / 与 DSML 之间的空白
  *
  * 只在文本里确实含 "DSML" 时才做替换，避免无谓开销。
+ *
+ * 注意：该函数在流式路径上每个 chunk 都会调用一次，不打日志，
+ * 清洗效果由外层的 formatUserContent / buildPromptFromMessages 的 before/after 体现。
  */
 function stripDsmlResidue(text) {
   if (!text || text.indexOf('DSML') === -1) return text;
-  const cleaned = text.replace(RE_DSML_ANY_TAG, '');
-  if (cleaned !== text) {
-    tlog('debug', '清理正文中残留的 DSML 标签', {
-      removed: text.length - cleaned.length,
-      preview: tp(text, 100),
-    });
-  }
-  return cleaned;
+  return text.replace(RE_DSML_ANY_TAG, '');
 }
 
 /**
@@ -138,18 +154,15 @@ function stripDsmlResidue(text) {
  *
  * 注意：如果模型在正常回复中「引用了」 <tool_call> 字面量作示例，也会被清掉，
  * 这是可接受的取舍（与 DSML 清理策略一致）。
+ *
+ * 注意：该函数在流式路径上每个 chunk 都会调用一次（经 ToolCallBuffer._finish），
+ * 不打日志，避免刷屏。
  */
 function stripToolCallResidue(text) {
   if (!text) return text;
   let s = stripDsmlResidue(text);
   if (/tool_call/i.test(s)) {
-    const cleaned = s.replace(RE_TOOL_CALL_ANY_TAG, '');
-    if (cleaned !== s) {
-      tlog('debug', '清理正文中残留的 tool_call 标签', {
-        removed: s.length - cleaned.length,
-      });
-    }
-    s = cleaned;
+    s = s.replace(RE_TOOL_CALL_ANY_TAG, '');
   }
   return s;
 }
@@ -205,7 +218,19 @@ export function buildPromptFromMessages(messages, systemText, toolsInstruction) 
   const history = formatHistory(messages);
   if (history) parts.push(history);
 
-  return parts.filter(Boolean).join('\n\n');
+  const prompt = parts.filter(Boolean).join('\n\n');
+
+  logTransform(
+    'buildPromptFromMessages',
+    JSON.stringify({
+      system: systemText,
+      toolsInstruction,
+      messages,
+    }),
+    prompt
+  );
+
+  return prompt;
 }
 
 function formatHistory(messages) {
@@ -242,7 +267,15 @@ function formatAssistantContent(content, toolCalls) {
       parts.push(`（此前调用过工具 ${name}，参数摘要：${summarizeArgs(args)}）`);
     }
   }
-  return parts.filter(Boolean).join('\n');
+  const out = parts.filter(Boolean).join('\n');
+
+  logTransform(
+    'formatAssistantContent',
+    JSON.stringify({ content, tool_calls: toolCalls }),
+    out
+  );
+
+  return out;
 }
 
 /**
@@ -285,6 +318,18 @@ function summarizeArgs(args) {
 }
 
 function formatUserContent(content) {
+  const out = formatUserContentInner(content);
+
+  logTransform(
+    'formatUserContent',
+    typeof content === 'string' ? content : JSON.stringify(content),
+    out
+  );
+
+  return out;
+}
+
+function formatUserContentInner(content) {
   if (typeof content === 'string') {
     // prompt 侧也清理 DSML 残留：模型此前输出过的脏标签不应通过历史回到
     // 模型眼前，否则会形成"复述残留标签"的正反馈。

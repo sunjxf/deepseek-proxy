@@ -35,8 +35,8 @@ const LOG_LEVEL = LOG_LEVELS[String(process.env.LOG_LEVEL || 'info').toLowerCase
 const LOG_FILE =
   process.env.LOG_FILE || path.join(__dirname, 'logs', 'app.log');
 const LOG_TO_FILE = String(process.env.LOG_TO_FILE ?? '1') !== '0';
-// 单文件大小上限（默认 5MB），超过后轮转为 app.log.1
-const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES) || 5 * 1024 * 1024;
+// 单文件大小上限（默认 50MB），超过后轮转为 app.log.1
+const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES) || 50 * 1024 * 1024;
 
 let logStream = null;
 let logBytes = 0;
@@ -145,6 +145,18 @@ function preview(text, len = 200) {
   if (text == null) return '';
   const s = String(text).replace(/\s+/g, ' ');
   return s.length > len ? s.slice(0, len) + `…(${s.length}字符)` : s;
+}
+
+// 把清洗前/清洗后内容格式化成多行文本，便于人工对照差异。
+// 不用 JSON 包裹，避免换行被转义成 \\n、内容挤成一行。
+function formatRawClean(raw, clean) {
+  return (
+    `\n----- 清洗前 (${raw.length} 字符) -----\n` +
+    (raw || '(空)') +
+    `\n----- 清洗后 (${clean.length} 字符) -----\n` +
+    (clean || '(空)') +
+    `\n----- 结束 -----`
+  );
 }
 
 // 把请求体序列化成一行完整 JSON 用于日志。
@@ -556,6 +568,8 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
   const toolBuf = new ToolCallBuffer();
   const toolCallsOut = [];
   let toolCallIndex = 0;
+  let rawAll = '';
+  let cleanAll = '';
 
   try {
     for await (const obj of iterateDeepSeekEvents(upstream)) {
@@ -563,6 +577,9 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
       if (!text) continue;
 
       const { text: clean, toolCalls } = toolBuf.feed(text);
+
+      rawAll += text;
+      cleanAll += clean;
 
       if (clean) writeChunk({ content: clean }, null);
 
@@ -588,7 +605,10 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
     }
 
     const tail = toolBuf.flush();
-    if (tail.text) writeChunk({ content: tail.text }, null);
+    if (tail.text) {
+      cleanAll += tail.text;
+      writeChunk({ content: tail.text }, null);
+    }
     for (const call of tail.toolCalls) {
       toolCallsOut.push(call);
       writeChunk(
@@ -609,6 +629,11 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
       );
     }
 
+    lg.info(
+      'openai-stream',
+      formatRawClean(rawAll, cleanAll) +
+        `\n工具调用: ${toolCallsOut.length}`
+    );
     lg.info('openai-stream', '流式输出完成', {
       toolCalls: toolCallsOut.length,
     });
@@ -650,6 +675,9 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
 
   // 状态机
   const toolBuf = new ToolCallBuffer();
+  let rawAll = '';
+  let cleanAll = '';
+  let toolCallCount = 0;
   let blockIndex = 0;
   let currentType = null; // 'text' | 'tool_use'
   let textBlockOpen = false;
@@ -736,13 +764,27 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
 
       const { text: clean, toolCalls } = toolBuf.feed(text);
 
+      rawAll += text;
+      cleanAll += clean;
+
       if (clean) emitTextDelta(clean);
-      for (const call of toolCalls) emitToolUse(call);
+      for (const call of toolCalls) {
+        toolCallCount++;
+        emitToolUse(call);
+      }
     }
 
     const tail = toolBuf.flush();
+    cleanAll += tail.text;
+    toolCallCount += tail.toolCalls.length;
     if (tail.text) emitTextDelta(tail.text);
     for (const call of tail.toolCalls) emitToolUse(call);
+
+    lg.info(
+      'anthropic-stream',
+      formatRawClean(rawAll, cleanAll) +
+        `\n工具调用: ${toolCallCount}`
+    );
 
     closeCurrentBlock();
 
@@ -780,23 +822,26 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
 
 /* ---------- 非流式收集 ---------- */
 
-async function collectDeepSeek(upstream) {
+async function collectDeepSeek(upstream, lg = log) {
   const toolBuf = new ToolCallBuffer();
+  let rawAll = '';
   let acc = '';
 
   for await (const obj of iterateDeepSeekEvents(upstream)) {
     const text = extractDeepSeekText(obj);
     if (!text) continue;
-    const { text: clean, toolCalls } = toolBuf.feed(text);
+    const { text: clean } = toolBuf.feed(text);
+    rawAll += text;
     acc += clean;
-    if (toolCalls.length > 0) {
-      // 非流式下也累积到 buffer，最后一起解析
-      // 为简化，把 toolCalls 拼回 buffer（不会发生，因为已解析）
-    }
   }
 
   const tail = toolBuf.flush();
   acc += tail.text;
+
+  lg.info(
+    'collect',
+    formatRawClean(rawAll, acc) + `\n工具调用: ${tail.toolCalls.length}`
+  );
 
   return { text: acc, toolCalls: tail.toolCalls };
 }
@@ -867,7 +912,7 @@ app.post('/api/v0/chat/completion', async (req, res) => {
   const started = Date.now();
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
-  lg.info('native', '收到请求', {
+  lg.debug('native', '收到请求', {
     ip: req.ip,
     stream: true,
     sessionId: req.body?.chat_session_id || cfg.chatSessionId || '(空)',
@@ -963,7 +1008,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   const started = Date.now();
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
-  lg.info('收到请求', {
+  lg.debug('收到请求', {
     model: req.body?.model,
     stream: !!req.body?.stream,
     messages: req.body?.messages?.length ?? 0,
@@ -1033,7 +1078,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('x-accel-buffering', 'no');
       await streamAsOpenAI(upstream, res, req.body.model, lg);
     } else {
-      const { text, toolCalls } = await collectDeepSeek(upstream);
+      const { text, toolCalls } = await collectDeepSeek(upstream, lg);
       const toolCallsOut =
         toolCalls.length > 0
           ? toolCalls.map((c, i) => ({
@@ -1087,7 +1132,7 @@ app.post('/v1/messages', async (req, res) => {
   const lg = makeLog('anthropic', rid);
   stats.totalRequests += 1;
   stats.lastRequestAt = Date.now();
-  lg.info('收到请求', {
+  lg.debug('收到请求', {
     model: req.body?.model,
     stream: req.body?.stream !== false,
     messages: req.body?.messages?.length ?? 0,
@@ -1159,7 +1204,7 @@ app.post('/v1/messages', async (req, res) => {
       lg.info('开始流式输出', { model: req.body.model });
       await streamAsAnthropic(upstream, res, req.body.model, lg);
     } else {
-      const { text, toolCalls } = await collectDeepSeek(upstream);
+      const { text, toolCalls } = await collectDeepSeek(upstream, lg);
 
       const content = [];
       if (text) content.push({ type: 'text', text });

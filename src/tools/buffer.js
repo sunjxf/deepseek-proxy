@@ -136,6 +136,11 @@ export class ToolCallBuffer {
       if (tryParseJson(body) !== undefined) {
         return { endIdx: idx };
       }
+      // 与 parseToolCallsJson 的修复路径保持一致：能修括号修好的也算合法终点
+      const balanced = balanceBrackets(fixRawNewlinesInJson(body));
+      if (balanced !== body && tryParseJson(balanced) !== undefined) {
+        return { endIdx: idx };
+      }
     }
     return null;
   }
@@ -296,6 +301,40 @@ export class ToolCallBuffer {
           this.buffer = '';
           return out;
         }
+      }
+    }
+
+    // 兜底：流结束时最后一个 <tool_call> 漏写闭合标签。此时 buffer 从
+    // TOOL_CALL_START 之后到末尾的内容本身就是模型想要输出的 body，
+    // 只要它能解析成工具调用就应当被采纳，而不是当正文放行。
+    // 模型常见的坏写法：连续输出多个调用，只有最后一个漏闭合。
+    const rest = this.buffer.slice(from).trim();
+    if (rest) {
+      const fixed = fixRawNewlinesInJson(rest);
+      const balanced = balanceBrackets(fixed);
+      const candidates = fixed === rest ? [rest] : [rest, fixed];
+      if (balanced !== fixed && balanced !== rest) candidates.push(balanced);
+
+      for (const body of candidates) {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          continue;
+        }
+        const calls = this._buildCallsFromParsed(parsed);
+        if (!calls) continue;
+
+        tlog(
+          'debug',
+          `flush 解析未闭合 <tool_call> 成功 (${calls.length}): ${calls
+            .map((c) => c.name)
+            .join(',')}` + formatCalls(calls)
+        );
+        const out = { text: '', toolCalls: calls };
+        out.text += this.buffer.slice(0, tcStart);
+        this.buffer = '';
+        return out;
       }
     }
 

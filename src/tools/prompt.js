@@ -38,6 +38,7 @@ export function formatToolsInstruction(tools) {
     '3. 不需要调用工具时，直接正常回复文本',
     '4. 不要自己编造工具执行结果，工具结果会由系统返回',
     '5. 输出 JSON 前请自检括号是否一一对应，尤其是嵌套的对象和数组',
+    `6. 每个工具调用都必须成对输出 ${TOOL_CALL_START} 和 ${TOOL_CALL_END}；多个调用请逐个闭合，不要省略`,
   ].join('\n');
 }
 

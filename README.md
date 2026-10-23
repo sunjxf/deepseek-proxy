@@ -2,7 +2,7 @@
 
 将 DeepSeek Chat 网页端接口 (`chat.deepseek.com`) 包装成本地代理服务，对外提供 **OpenAI 兼容** 与 **Anthropic 兼容** 两套 API。
 
-内置 PoW (Proof-of-Work) 自动求解、限速节流、指数退避重试、工具调用（Function Calling）转换，以及一个可视化配置管理页面。
+内置 PoW (Proof-of-Work) 自动求解、限速节流、指数退避重试、工具调用（Function Calling）转换、结构化日志，以及一个可视化配置管理页面。
 
 ---
 
@@ -16,6 +16,7 @@
 - **限速与节流** —— 每分钟请求数上限 + 相邻请求最小间隔，双管齐下避免触发上游 429
 - **重试机制** —— 针对 `429 / 500 / 502 / 503 / 504` 指数退避重试，尊重 `Retry-After` 响应头
 - **工具调用解析** —— 兼容两种模型输出格式（自定义 `<tool_call>` 与 DeepSeek 原生 DSML），容忍格式噪声
+- **结构化日志** —— 分级别（error/warn/info/debug）、按请求 ID 串联、支持文件输出与大小轮转
 - **可视化配置页** —— `/admin` 页面在线修改配置并持久化，无需重启（host/port 除外）
 - **敏感字段保护** —— `authorization` 不会明文返回前端，仅显示长度摘要；配置文件写入权限 `0600`
 
@@ -46,9 +47,12 @@ npm install
   "requestTimeoutMs": 120000,
   "maxRetries": 4,
   "retryBaseDelayMs": 1000,
-  "maxRequestsPerMinute": 20,
-  "requestIntervalMs": 5000,
+  "maxRequestsPerMinute": 30,
+  "requestIntervalMs": 0,
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/155.0.0.0 Safari/537.36",
   "powEnabled": true,
+  "powChallengeUrl": "https://chat.deepseek.com/api/v0/chat/create_pow_challenge",
+  "powTargetPath": "/api/v0/chat/completion",
   "chatSessionId": "<你的会话 ID>",
   "authorization": "Bearer <你的 Token>"
 }
@@ -82,12 +86,13 @@ npm start
 启动后终端会打印各端点地址：
 
 ```
-代理服务:  http://127.0.0.1:3000
-配置页面:  http://127.0.0.1:3000/admin
-测试页面:  http://127.0.0.1:3000/test
-OpenAI:   http://127.0.0.1:3000/v1/chat/completions
-Anthropic:http://127.0.0.1:3000/v1/messages
-配置文件:  <项目根>/config.json
+代理服务:   http://127.0.0.1:3000
+配置页面:   http://127.0.0.1:3000/admin
+测试页面:   http://127.0.0.1:3000/test
+OpenAI:    http://127.0.0.1:3000/v1/chat/completions
+Anthropic: http://127.0.0.1:3000/v1/messages
+配置文件:   <项目根>/config.json
+日志文件:   <项目根>/logs/app.log
 PoW 自动求解: 已开启
 ```
 
@@ -159,12 +164,13 @@ const client = new Anthropic({
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI 兼容对话端点 |
 | `POST` | `/v1/messages` | Anthropic 兼容对话端点 |
-| `POST` | `/api/v0/chat/completion` | DeepSeek 原生端点（直通） |
+| `POST` | `/api/v0/chat/completion` | DeepSeek 原生端点（直通，保留原始 SSE） |
 | `GET` | `/admin/api/config` | 读取当前配置与运行统计 |
 | `PUT` | `/admin/api/config` | 更新配置并持久化 |
 | `POST` | `/admin/api/test` | 测试上游连通性 |
 | `GET` | `/admin` | 可视化配置页面 |
-| `GET` | `/test` | 对话测试页面 |
+| `GET` | `/test` | 对话测试页面（302 → `/admin/test.html`） |
+| `GET` | `/` | 302 → `/admin/` |
 
 ### 配置更新示例
 
@@ -181,17 +187,45 @@ curl -X PUT http://127.0.0.1:3000/admin/api/config \
 
 修改 `host` / `port` 会返回 `restartRequired: true`，需重启进程生效。
 
+`GET /admin/api/config` 返回的 `runtime` 字段包含运行统计：`totalRequests`、`successRequests`、`failedRequests`、`retriedRequests`、`throttledRequests`、`lastError`、`uptimeMs`、`pid`、`node`、`configPath` 等。
+
+---
+
+## 日志
+
+服务使用统一的结构化日志，格式为：
+
+```
+[2026-10-23 22:40:01.123][openai][3f-1a2b] 消息内容 {附加字段}
+```
+
+即 `[时间][作用域][请求ID] 内容`，同一请求的多行日志可用请求 ID 串联。
+
+可用环境变量控制：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `LOG_LEVEL` | `info` | `error` / `warn` / `info` / `debug` |
+| `LOG_FILE` | `<项目根>/logs/app.log` | 日志文件路径 |
+| `LOG_TO_FILE` | `1` | 设为 `0` 关闭文件日志，仅输出控制台 |
+| `LOG_MAX_BYTES` | `52428800`（50MB） | 单文件上限，超过后轮转为 `app.log.1` |
+| `LOG_BODY_MAX` | `1048576` | 请求体日志的最大字符数；`0` 完全关闭请求体日志 |
+
+日志中会打印**清洗前/清洗后对照**（工具标签剥离前后），便于排查模型输出格式问题。
+
 ---
 
 ## 项目结构
 
 ```
 .
-├── server.js      # Express 服务：路由、限速、重试、SSE 转换、协议适配
+├── server.js      # Express 服务：路由、限速、重试、SSE 转换、协议适配、日志
 ├── config.js      # 配置加载 / 校验 / 持久化（含环境变量覆盖）
 ├── pow.js         # PoW challenge 获取与求解，生成 x-ds-pow-response
 ├── tools.js       # 工具调用支持：Prompt 构造、流式标签缓冲、DSML/JSON 解析
 ├── config.json    # 运行时配置（含凭证，权限 0600，勿提交到版本库）
+├── logs/
+│   └── app.log    # 运行日志（已 gitignore）
 └── public/
     ├── index.html # 配置管理页
     ├── app.js     # 配置页逻辑（表单分组、敏感字段掩码）
@@ -202,6 +236,7 @@ curl -X PUT http://127.0.0.1:3000/admin/api/config \
 ### 核心模块说明
 
 **`server.js`**
+- 日志系统：`makeLog()` 生成带作用域/请求 ID 的 logger，`writeToFile()` + `rotateIfNeeded()` 负责落盘与轮转
 - `throttle()` / `waitForInterval()` —— 两层限速：每分钟窗口计数 + 请求间最小间隔（Promise 链排队，保证并发下间隔有效）
 - `fetchWithRetry()` —— 指数退避 + 抖动，最大 16s，支持 `Retry-After`
 - `extractDeepSeekText()` —— 从 DeepSeek 的 `BATCH` / `fragments` / `APPEND` 事件中还原文本
@@ -210,8 +245,11 @@ curl -X PUT http://127.0.0.1:3000/admin/api/config \
 
 **`tools.js`**
 - `buildPromptFromMessages()` —— 把 OpenAI / Anthropic 的 messages 结构压平成 DeepSeek 单条 prompt
+- `formatToolsInstruction()` —— 生成工具清单与调用格式说明，注入 prompt
 - `ToolCallBuffer` —— 流式增量解析器，识别 `<tool_call>` 与 DSML 两种格式，容忍跨 chunk 截断、全角/半角竖线混用、缺失外层包裹等异常
+- `balanceBrackets()` —— 字符串感知的单遍括号修复，处理模型少写/多写括号、字符串未闭合
 - `coerceDsmlValue()` —— 按模型显式声明的类型转换参数，默认保留字符串（避免 `"007"` 被误转数字）
+- `summarizeArgs()` —— 把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
 
 **`pow.js`**
 - `fetchChallenge()` —— 调用 `create_pow_challenge` 获取 challenge
@@ -223,10 +261,11 @@ curl -X PUT http://127.0.0.1:3000/admin/api/config \
 
 - ⚠️ **不要暴露到公网。** 代理持有你的 DeepSeek 凭证，且默认无鉴权。
 - ⚠️ **`config.json` 含敏感凭证**，请加入 `.gitignore`，不要提交。
+- `logs/` 已在 `.gitignore` 中，日志可能包含完整请求体（受 `LOG_BODY_MAX` 控制），注意脱敏。
 - 会话 ID (`chatSessionId`) 决定上下文归属。若要开启新会话，清空该字段，代理会自动生成随机 UUID。
 - `authorization` 会过期，失效时重新从浏览器抓取即可。
 - 上游为网页端非公开 API，DeepSeek 可能随时调整结构，若报错请检查 `extractDeepSeekText()` 与 `pow.js` 的解析逻辑。
-- 限速默认值较保守（20 次/分钟、5 秒间隔），如遇 429 请调低，如追求速度可适当调高并观察稳定性。
+- 限速默认值较保守（30 次/分钟、无强制间隔），如遇 429 请调低，如追求速度可适当调高并观察稳定性。
 
 ---
 

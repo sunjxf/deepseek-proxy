@@ -147,13 +147,16 @@ function preview(text, len = 200) {
   return s.length > len ? s.slice(0, len) + `…(${s.length}字符)` : s;
 }
 
-// 把清洗前/清洗后内容格式化成多行文本，便于人工对照差异。
-// 不用 JSON 包裹，避免换行被转义成 \\n、内容挤成一行。
-function formatRawClean(raw, clean) {
+// 三段式日志：大模型原始响应 → 解析成工具调用最终格式 → 正文清洗后。
+// calls 为 OpenAI tool_calls 数组或 Anthropic tool_use 数组，原样 JSON 输出。
+function formatExchange(raw, calls, clean) {
+  const n = Array.isArray(calls) ? calls.length : 0;
   return (
-    `\n----- 清洗前 (${raw.length} 字符) -----\n` +
+    `\n----- 大模型响应（原始 ${raw.length} 字符）-----\n` +
     (raw || '(空)') +
-    `\n----- 清洗后 (${clean.length} 字符) -----\n` +
+    `\n----- 解析成工具调用最终格式（${n} 个）-----\n` +
+    (n > 0 ? JSON.stringify(calls, null, 2) : '(无)') +
+    `\n----- 正文清洗后（${clean.length} 字符）-----\n` +
     (clean || '(空)') +
     `\n----- 结束 -----`
   );
@@ -629,11 +632,7 @@ async function streamAsOpenAI(upstream, res, model, lg = log) {
       );
     }
 
-    lg.info(
-      'openai-stream',
-      formatRawClean(rawAll, cleanAll) +
-        `\n工具调用: ${toolCallsOut.length}`
-    );
+    lg.info('openai-stream', formatExchange(rawAll, toolCallsOut, cleanAll));
     lg.info('openai-stream', '流式输出完成', {
       toolCalls: toolCallsOut.length,
     });
@@ -675,6 +674,7 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
 
   // 状态机
   const toolBuf = new ToolCallBuffer();
+  const toolUsesOut = [];
   let rawAll = '';
   let cleanAll = '';
   let toolCallCount = 0;
@@ -729,6 +729,13 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
     closeCurrentBlock();
     const toolId = newToolUseId();
 
+    toolUsesOut.push({
+      type: 'tool_use',
+      id: toolId,
+      name: call.name,
+      input: call.arguments ?? {},
+    });
+
     writeEvent('content_block_start', {
       type: 'content_block_start',
       index: blockIndex,
@@ -782,8 +789,7 @@ async function streamAsAnthropic(upstream, res, model, lg = log) {
 
     lg.info(
       'anthropic-stream',
-      formatRawClean(rawAll, cleanAll) +
-        `\n工具调用: ${toolCallCount}`
+      formatExchange(rawAll, toolUsesOut, cleanAll)
     );
 
     closeCurrentBlock();
@@ -838,12 +844,12 @@ async function collectDeepSeek(upstream, lg = log) {
   const tail = toolBuf.flush();
   acc += tail.text;
 
-  lg.info(
+  lg.debug(
     'collect',
-    formatRawClean(rawAll, acc) + `\n工具调用: ${tail.toolCalls.length}`
+    `原始 ${rawAll.length} 字符，正文 ${acc.length} 字符，工具调用 ${tail.toolCalls.length}`
   );
 
-  return { text: acc, toolCalls: tail.toolCalls };
+  return { text: acc, toolCalls: tail.toolCalls, rawAll };
 }
 
 /* ---------- 配置管理 API ---------- */
@@ -1078,7 +1084,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('x-accel-buffering', 'no');
       await streamAsOpenAI(upstream, res, req.body.model, lg);
     } else {
-      const { text, toolCalls } = await collectDeepSeek(upstream, lg);
+      const { text, toolCalls, rawAll } = await collectDeepSeek(upstream, lg);
       const toolCallsOut =
         toolCalls.length > 0
           ? toolCalls.map((c, i) => ({
@@ -1091,6 +1097,8 @@ app.post('/v1/chat/completions', async (req, res) => {
               },
             }))
           : undefined;
+
+      lg.info('openai-collect', formatExchange(rawAll, toolCallsOut, text));
 
       res.json({
         id: 'chatcmpl-' + Date.now().toString(36),
@@ -1204,18 +1212,20 @@ app.post('/v1/messages', async (req, res) => {
       lg.info('开始流式输出', { model: req.body.model });
       await streamAsAnthropic(upstream, res, req.body.model, lg);
     } else {
-      const { text, toolCalls } = await collectDeepSeek(upstream, lg);
+      const { text, toolCalls, rawAll } = await collectDeepSeek(upstream, lg);
 
       const content = [];
       if (text) content.push({ type: 'text', text });
-      for (const call of toolCalls) {
-        content.push({
-          type: 'tool_use',
-          id: newToolUseId(),
-          name: call.name,
-          input: call.arguments ?? {},
-        });
-      }
+
+      const toolUsesOut = toolCalls.map((call) => ({
+        type: 'tool_use',
+        id: newToolUseId(),
+        name: call.name,
+        input: call.arguments ?? {},
+      }));
+      for (const tu of toolUsesOut) content.push(tu);
+
+      lg.info('anthropic-collect', formatExchange(rawAll, toolUsesOut, text));
 
       res.json({
         id: newMessageId(),

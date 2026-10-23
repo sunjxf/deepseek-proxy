@@ -13,6 +13,7 @@
  *   - 正文中残留的孤立 DSML 开/闭标签（含只有关闭标签的情况）
  *   - < 与 / 或 DSML 之间出现空白（如 </ ｜｜DSML｜｜ invoke>、< / ｜｜DSML｜｜ calls>）
  *   - 正文中残留的孤立 <tool_call> / </tool_call> 标签
+ *   - 正文中残留的 <tool_result>...</result> / <tool_result> 标签
  *   - JSON 括号少写/多写一层（balanceBrackets 兜底）
  */
 
@@ -59,6 +60,25 @@ function logTransform(label, before, after) {
   );
 }
 
+/* ---------- 工具调用日志格式化 ---------- */
+
+// 把解析后的工具调用格式化成多行文本，用于 debug 日志。
+// 每个调用一行：序号 名字 完整参数 JSON。
+function formatCalls(calls) {
+  if (!Array.isArray(calls) || calls.length === 0) return '';
+  return calls
+    .map((c, i) => {
+      let args;
+      try {
+        args = JSON.stringify(c.arguments ?? {});
+      } catch {
+        args = String(c.arguments);
+      }
+      return `\n  [${i + 1}] ${c.name} ${args}`;
+    })
+    .join('');
+}
+
 // 全角竖线 U+FF5C，DeepSeek 的 DSML 使用它
 const PIPE = '\uFF5C';
 
@@ -98,6 +118,12 @@ const RE_DSML_CLOSE_SEQ = new RegExp(
 // 任意 <tool_call> / </tool_call> 标签（含带属性、大小写混用、带空白），用于清理残留
 const RE_TOOL_CALL_ANY_TAG = /<\s*\/?\s*tool_call\b[^>]*>/gi;
 
+// <tool_result>...</result> / <tool_result>...</tool_result> 成块删除
+const RE_TOOL_RESULT_BLOCK =
+  /<\s*tool_result\b[^>]*>[\s\S]*?<\s*\/\s*(?:tool_result|result)\s*>/gi;
+// 孤立的 <tool_result> / </tool_result> / </result> 标签
+const RE_TOOL_RESULT_TAG = /<\s*\/?\s*(?:tool_result|result)\b[^>]*>/gi;
+
 function findDsmlCallsStart(haystack, fromIndex = 0) {
   const re = new RegExp(RE_CALLS_START.source, 'g');
   re.lastIndex = fromIndex;
@@ -129,17 +155,7 @@ function isPartialDsmlCallsStart(s) {
 /**
  * 剥离正文里残留的 DSML 标签。
  *
- * 处理对象包括：
- *   - 成对的开/闭标签
- *   - 孤立的关闭标签（如 </｜｜DSML｜｜ invoke>、</ ｜｜DSML｜｜ calls>）
- *   - 孤立的开始标签（未闭合）
- *   - 半角/全角竖线混用
- *   - < 与 / 与 DSML 之间的空白
- *
- * 只在文本里确实含 "DSML" 时才做替换，避免无谓开销。
- *
- * 注意：该函数在流式路径上每个 chunk 都会调用一次，不打日志，
- * 清洗效果由外层的 formatUserContent / buildPromptFromMessages 的 before/after 体现。
+ * 注意：该函数在流式路径上每个 chunk 都会调用一次，不打日志。
  */
 function stripDsmlResidue(text) {
   if (!text || text.indexOf('DSML') === -1) return text;
@@ -147,20 +163,33 @@ function stripDsmlResidue(text) {
 }
 
 /**
- * 剥离正文里残留的 DSML 标签 + 孤立的 <tool_call> / </tool_call> 标签。
+ * 剥离正文里残留的 <tool_result>...</result> 标签。
+ * 模型会把 [工具结果 ...] 学成这种伪标签，必须清掉以免下一轮继续模仿。
  *
- * 成对的 <tool_call>...</tool_call> 会在 ToolCallBuffer 的各分支里被消费；
- * 能走到文本输出路径的，只可能是解析失败或孤立的开/闭标签，此时直接清掉。
- *
- * 注意：如果模型在正常回复中「引用了」 <tool_call> 字面量作示例，也会被清掉，
- * 这是可接受的取舍（与 DSML 清理策略一致）。
+ * 注意：该函数在流式路径上每个 chunk 都会调用一次（经 sanitizeText），不打日志。
+ */
+function stripToolResultResidue(text) {
+  if (!text) return text;
+  if (!/<\s*\/?\s*(?:tool_result|result)\b/i.test(text)) return text;
+  return text
+    .replace(RE_TOOL_RESULT_BLOCK, '')
+    .replace(RE_TOOL_RESULT_TAG, '');
+}
+
+// 组合清洗：DSML + tool_result
+function sanitizeText(text) {
+  return stripToolResultResidue(stripDsmlResidue(text));
+}
+
+/**
+ * 剥离正文里残留的 DSML 标签 + tool_result 标签 + 孤立的 <tool_call> / </tool_call> 标签。
  *
  * 注意：该函数在流式路径上每个 chunk 都会调用一次（经 ToolCallBuffer._finish），
  * 不打日志，避免刷屏。
  */
 function stripToolCallResidue(text) {
   if (!text) return text;
-  let s = stripDsmlResidue(text);
+  let s = sanitizeText(text);
   if (/tool_call/i.test(s)) {
     s = s.replace(RE_TOOL_CALL_ANY_TAG, '');
   }
@@ -222,11 +251,7 @@ export function buildPromptFromMessages(messages, systemText, toolsInstruction) 
 
   logTransform(
     'buildPromptFromMessages',
-    JSON.stringify({
-      system: systemText,
-      toolsInstruction,
-      messages,
-    }),
+    JSON.stringify({ system: systemText, toolsInstruction, messages }),
     prompt
   );
 
@@ -284,9 +309,6 @@ function formatAssistantContent(content, toolCalls) {
  * - 字符串值超过 40 字符截断，并标注原长度
  * - 数组标注项数，对象标注字段数
  * - 最终整行超过 200 字符再截断
- *
- * 目的：既让模型知道"调过什么工具、动了哪个文件/目标"，又不把整段源码
- * 塞进 prompt —— 后者会撑大上下文，还会诱导模型下轮模仿长 JSON 时数错括号。
  */
 function summarizeArgs(args) {
   let obj = args;
@@ -331,21 +353,21 @@ function formatUserContent(content) {
 
 function formatUserContentInner(content) {
   if (typeof content === 'string') {
-    // prompt 侧也清理 DSML 残留：模型此前输出过的脏标签不应通过历史回到
+    // prompt 侧也清理残留标签：模型此前输出过的脏标签不应通过历史回到
     // 模型眼前，否则会形成"复述残留标签"的正反馈。
-    return stripDsmlResidue(content);
+    return sanitizeText(content);
   }
-  if (!Array.isArray(content)) return stripDsmlResidue(String(content ?? ''));
+  if (!Array.isArray(content)) return sanitizeText(String(content ?? ''));
 
   const parts = [];
   for (const block of content) {
     if (!block) continue;
     if (typeof block === 'string') {
-      parts.push(stripDsmlResidue(block));
+      parts.push(sanitizeText(block));
       continue;
     }
     if (block.type === 'text') {
-      parts.push(stripDsmlResidue(block.text || ''));
+      parts.push(sanitizeText(block.text || ''));
     } else if (block.type === 'tool_result') {
       const inner = formatToolResultContent(block.content);
       const isError = block.is_error ? '（执行失败）' : '';
@@ -358,19 +380,19 @@ function formatUserContentInner(content) {
 }
 
 function formatToolResultContent(content) {
-  if (typeof content === 'string') return stripDsmlResidue(content);
+  if (typeof content === 'string') return sanitizeText(content);
   if (Array.isArray(content)) {
     return content
       .map((c) => {
-        if (typeof c === 'string') return stripDsmlResidue(c);
-        if (c?.type === 'text') return stripDsmlResidue(c.text || '');
+        if (typeof c === 'string') return sanitizeText(c);
+        if (c?.type === 'text') return sanitizeText(c.text || '');
         if (c?.type === 'image') return '[图片]';
         return '';
       })
       .filter(Boolean)
       .join('\n');
   }
-  return stripDsmlResidue(String(content ?? ''));
+  return sanitizeText(String(content ?? ''));
 }
 
 /* ---------- ID 生成 ---------- */
@@ -440,10 +462,11 @@ export class ToolCallBuffer {
 
         const calls = parseToolCallsJson(body);
         if (calls) {
-          tlog('info', '解析 tool_call 成功', {
-            count: calls.length,
-            names: calls.map((c) => c.name).join(','),
-          });
+          tlog(
+            'debug',
+            `解析 tool_call 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+              formatCalls(calls)
+          );
           out.toolCalls.push(...calls);
         } else {
           tlog('warn', 'tool_call 解析失败，回退为正文', {
@@ -465,10 +488,11 @@ export class ToolCallBuffer {
         const body = this.buffer.slice(pos + len, endIdx);
         const calls = parseDsmlCalls(body);
         if (calls.length > 0) {
-          tlog('info', '解析 DSML calls 成功', {
-            count: calls.length,
-            names: calls.map((c) => c.name).join(','),
-          });
+          tlog(
+            'debug',
+            `解析 DSML calls 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+              formatCalls(calls)
+          );
           out.toolCalls.push(...calls);
         } else {
           tlog('warn', 'DSML calls 解析失败，回退为正文', { body: tp(body, 200) });
@@ -485,10 +509,11 @@ export class ToolCallBuffer {
         const body = this.buffer.slice(pos, consumed);
         const calls = parseDsmlCalls(body);
         if (calls.length > 0) {
-          tlog('info', '解析裸 DSML invoke 成功', {
-            count: calls.length,
-            names: calls.map((c) => c.name).join(','),
-          });
+          tlog(
+            'debug',
+            `解析裸 DSML invoke 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+              formatCalls(calls)
+          );
           out.toolCalls.push(...calls);
         } else {
           tlog('warn', '裸 DSML invoke 解析失败，回退为正文', {
@@ -543,6 +568,11 @@ export class ToolCallBuffer {
     if (findDsmlCallsStart(this.buffer)) {
       const calls = parseDsmlCalls(this.buffer);
       if (calls.length > 0) {
+        tlog(
+          'debug',
+          `flush 解析 DSML calls 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+            formatCalls(calls)
+        );
         out.toolCalls.push(...calls);
         this.buffer = '';
         return this._finish(out);
@@ -554,6 +584,11 @@ export class ToolCallBuffer {
     if (bareRe.test(this.buffer)) {
       const calls = parseDsmlCalls(this.buffer);
       if (calls.length > 0) {
+        tlog(
+          'debug',
+          `flush 解析裸 DSML invoke 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+            formatCalls(calls)
+        );
         out.toolCalls.push(...calls);
         this.buffer = '';
         return this._finish(out);
@@ -570,10 +605,11 @@ export class ToolCallBuffer {
         .trim();
       const calls = parseToolCallsJson(body);
       if (calls) {
-        tlog('debug', 'flush 解析 <tool_call> 成功', {
-          count: calls.length,
-          names: calls.map((c) => c.name).join(','),
-        });
+        tlog(
+          'debug',
+          `flush 解析 <tool_call> 成功 (${calls.length}): ${calls.map((c) => c.name).join(',')}` +
+            formatCalls(calls)
+        );
         out.toolCalls.push(...calls);
         this.buffer = '';
         return this._finish(out);

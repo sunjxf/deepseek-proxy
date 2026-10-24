@@ -201,6 +201,26 @@ Anthropic 风格用 `{"type": "image", "source": {"type": "base64", "media_type"
 
 ---
 
+## 界面预览
+
+### 配置页
+
+`http://127.0.0.1:3001/admin` 提供可视化配置管理，按 Tab 分组（运行状态 / 服务 / PoW / 会话 / 凭证），改动未保存时对应 Tab 显示小圆点提示。
+
+![配置页](docs/images/config-page.png)
+
+*配置页：Tab 分组表单、敏感字段掩码、右上角「测试连接」与「保存」。*
+
+### 代理控制台
+
+`http://127.0.0.1:3001/test` 是对话测试页，可在三个端点间切换，支持 `thinking` / `search` 开关、原始 SSE 查看，以及兼容端点的图片上传。
+
+![代理控制台](docs/images/proxy-console.png)
+
+*代理控制台：端点切换、会话 ID、thinking/search 开关、图片附件与 SSE 流式回复。*
+
+---
+
 ## 接入 Claude Code（CC Switch + VSCode 插件）
 
 本代理暴露 Anthropic 兼容端点 `/v1/messages`，可以直接作为 Claude Code 的 API 后端，用 DeepSeek 代替 Anthropic 官方服务。配合 [CC Switch](https://github.com/farion1231/cc-switch) 管理多套配置，在 VSCode 的 Claude Code 插件里使用。

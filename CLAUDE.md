@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 把 DeepSeek Chat **网页端** API（`chat.deepseek.com`）包装成本地代理，对外暴露 OpenAI 兼容与 Anthropic 兼容两套端点。单进程 Node ESM 应用，无构建、无测试、无 linter。
 
+支持文本与图片输入：兼容端点会从最后一条 user 消息里提取 base64 图片，上传到 DeepSeek 换取 `file_id`，再通过 `ref_file_ids` 引用。
+
 ## 常用命令
 
 ```bash
@@ -46,8 +48,10 @@ OpenAI / Anthropic 两个兼容端点的数据流一致（native 端点直通，
 ```
 客户端请求
   -> throttle() + waitForInterval()       （两层限速）
+  -> extractImagesFromMessages()          （抽出最后一条 user 消息里的图片，其余内容保留）
+  -> uploadImages()                       （图片传上游换 file_id，失败单张跳过）
   -> buildPromptFromMessages()            （把 messages 压平成单个 prompt 字符串）
-  -> forwardToDeepSeek()                  （求解 PoW，然后 fetchWithRetry）
+  -> forwardToDeepSeek()                  （求解 PoW，然后 fetchWithRetry，ref_file_ids 带上图片）
   -> iterateDeepSeekEvents()              （解析上游 SSE）
   -> extractDeepSeekText()                （从 BATCH/fragments/APPEND 事件中还原文本）
   -> ToolCallBuffer.feed()/flush()        （剥离工具标签，产出结构化调用）
@@ -55,6 +59,23 @@ OpenAI / Anthropic 两个兼容端点的数据流一致（native 端点直通，
 ```
 
 `src/routes/native.js` 是例外：它只做 `throttle()` + PoW + `fetchWithRetry()`，然后把 `req.body` 直发上游、把原始 SSE 流 pipe 回客户端，不经过 prompt 压平、不解析工具标签、不转换协议。
+
+### 图片输入（vision）
+
+OpenAI / Anthropic 兼容端点支持图片输入，走一条与文本完全不同的路径：
+
+```
+req.body.messages
+  -> extractImagesFromMessages()    （只取最后一条 user 消息里的图，剔出图片块）
+  -> buildPromptFromMessages()      （图片块变 [图片] 占位，base64 不进 prompt）
+  -> uploadImages()                 （逐张上传，拿 file_id）
+  -> forwardToDeepSeek({refFileIds})（file_id 放进上游 ref_file_ids）
+```
+
+- **只处理最后一条 user 消息**：历史图片不重复上传，否则每轮请求都要重传整段图片历史。历史消息里的图片块在 `formatUserContentInner()` 里统一降级为 `[图片]`，base64 永远不会写进 prompt。
+- **上传失败非致命**：`uploadImages()` 单张失败只记 warning 并跳过，prompt 里保留 `[图片]` 占位，请求继续。
+- **上传接口的 PoW target_path 与 completion 不同**（`/api/v0/file/upload_file`），所以 `solveAndBuildHeader(cfg, targetPath)` 支持覆盖；上传时 PoW 失败直接抛错（无 PoW 的上传大概率 401/403，继续发只浪费往返）。
+- **multipart body 不复用 `fetchWithRetry`**：重试时 boundary 与流状态不可重放，`upload.js` 自己实现重试循环，每次用 `buildBody()` 重建 `FormData`。
 
 ### 不可破坏的不变量
 
@@ -85,12 +106,12 @@ DeepSeek 网页端 API 只接受一条扁平 `prompt` 字符串加 `chat_session
 - **`src/logger.js`** —— `makeLog()` 生成带作用域/请求 ID 的 logger；`writeToFile()` + `rotateIfNeeded()` 落盘、按天切分、大小轮转、过期清理；`formatExchange()` 打印清洗前后对照。
 - **`src/stats.js`** —— 运行统计与 `recordError()`。
 - **`src/config.js`** —— 配置加载/校验/持久化。环境变量覆盖文件值。`updateConfig()` 执行补丁规则（`null` 清空，敏感字段的 `""` 表示"不修改"）。通过临时文件 + rename 原子写入，权限 `0600`。`CONFIG_PATH` 默认指向项目根的 `config.json`。
-- **`src/pow.js`** —— 获取 PoW challenge 并用懒初始化的 WASM 求解器求解；结果 base64 JSON 放进 `x-ds-pow-response` 头。PoW 失败非致命：请求会不带该头继续。
+- **`src/pow.js`** —— 获取 PoW challenge 并用懒初始化的 WASM 求解器求解；结果 base64 JSON 放进 `x-ds-pow-response` 头。`fetchChallenge()` / `solveAndBuildHeader()` 接受可选 `targetPath` 覆盖 `cfg.powTargetPath`（图片上传接口的 target 与 completion 不同）。PoW 失败非致命：请求会不带该头继续。
 - **`src/routes/`** —— 四个端点：`openai.js`、`anthropic.js`、`native.js`、`admin.js`，各导出 `registerXxxRoutes(app)`。
-- **`src/upstream/`** —— `client.js`（`buildUpstreamHeaders`、`fetchWithRetry`、`forwardToDeepSeek`）、`sse.js`（`iterateDeepSeekEvents`、`extractDeepSeekText`、`collectDeepSeek`）、`throttle.js`（`throttle`、`waitForInterval`）。
+- **`src/upstream/`** —— `client.js`（`buildUpstreamHeaders`、`fetchWithRetry`、`forwardToDeepSeek`）、`sse.js`（`iterateDeepSeekEvents`、`extractDeepSeekText`、`collectDeepSeek`）、`throttle.js`（`throttle`、`waitForInterval`）、`upload.js`（`uploadImage`、`uploadImages`，图片上传到 `file/upload_file` 拿 `file_id`）。
 - **`src/adapters/`** —— `openai.js`（`streamAsOpenAI`）、`anthropic.js`（`streamAsAnthropic`）、`usage.js`（token 估算）。
-- **`src/tools/`** —— 工具调用支持（见上）：`index.js` 聚合导出（对外 API 面刻意收窄，`parse.js` / `residue.js` 的底层函数不导出）；`residue.js` 正则常量、字符串状态机、残留清洗；`parse.js` JSON/DSML 解析；`buffer.js` `ToolCallBuffer`；`prompt.js` prompt 构造。
-- **`public/`** —— `/admin` 下的静态配置页与对话测试页。
+- **`src/tools/`** —— 工具调用支持（见上）：`index.js` 聚合导出（对外 API 面刻意收窄，`parse.js` / `residue.js` 的底层函数不导出）；`residue.js` 正则常量、字符串状态机、残留清洗；`parse.js` JSON/DSML 解析；`buffer.js` `ToolCallBuffer`；`prompt.js` prompt 构造与图片提取（`extractImagesFromMessages`）。
+- **`public/`** —— `/admin` 下的静态配置页与对话测试页。配置页为 Tab 布局（运行状态 / 服务 / PoW / 会话 / 凭证），有未保存改动时对应 tab 打小圆点；测试页支持切换 OpenAI / Anthropic / Native 三个端点，兼容端点可附带最多 4 张图片（≤10MB/张）验证 vision 链路。
 
 ### 日志约定
 

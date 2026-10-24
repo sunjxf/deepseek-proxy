@@ -2,22 +2,24 @@
 
 将 DeepSeek Chat 网页端接口 (`chat.deepseek.com`) 包装成本地代理服务，对外提供 **OpenAI 兼容** 与 **Anthropic 兼容** 两套 API。
 
-内置 PoW (Proof-of-Work) 自动求解、限速节流、指数退避重试、工具调用（Function Calling）转换、结构化日志，以及一个可视化配置管理页面。
+内置 PoW (Proof-of-Work) 自动求解、限速节流、指数退避重试、工具调用（Function Calling）转换、图片输入（vision）、结构化日志，以及一个可视化配置管理页面。
 
 ---
 
 ## 特性
 
 - **双协议兼容**
-  - OpenAI: `POST /v1/chat/completions`（支持 `stream`、`tools`、`tool_calls`）
-  - Anthropic: `POST /v1/messages`（支持 `stream`、`tools`、`tool_use` / `tool_result`）
+  - OpenAI: `POST /v1/chat/completions`（支持 `stream`、`tools`、`tool_calls`、`image_url`）
+  - Anthropic: `POST /v1/messages`（支持 `stream`、`tools`、`tool_use` / `tool_result`、`image` 块）
+- **图片输入（vision）** —— 兼容端点自动提取最后一条 user 消息里的 base64 图片，上传上游换取 `file_id` 并通过 `ref_file_ids` 引用；单张失败降级为 `[图片]` 占位，不中断请求
 - **PoW 自动求解** —— 基于 WASM 求解器，请求前自动获取 challenge 并生成 `x-ds-pow-response`，无需手工干预
 - **原生端点透传** —— `POST /api/v0/chat/completion` 直连 DeepSeek，保留原始 SSE 事件流
 - **限速与节流** —— 每分钟请求数上限 + 相邻请求最小间隔，双管齐下避免触发上游 429
 - **重试机制** —— 针对 `429 / 500 / 502 / 503 / 504` 指数退避重试，尊重 `Retry-After` 响应头
 - **工具调用解析** —— 兼容两种模型输出格式（自定义 `<tool_call>` 与 DeepSeek 原生 DSML），容忍格式噪声：括号缺失或多写、裸换行、单反斜杠 Windows 路径等非法转义
 - **结构化日志** —— 分级别（error/warn/info/debug）、按请求 ID 串联、支持文件输出与大小轮转
-- **可视化配置页** —— `/admin` 页面在线修改配置并持久化，无需重启（host/port 除外）
+- **可视化配置页** —— `/admin` 页面在线修改配置并持久化，无需重启（host/port 除外）；Tab 布局分组展示，未保存改动在对应 tab 上以小圆点提示
+- **图片输入（vision）** —— 兼容端点可从最后一条 user 消息里提取 base64 图片（OpenAI `image_url` / Anthropic `image`），自动上传到 DeepSeek 换取 `file_id` 并以 `ref_file_ids` 引用；历史图片不重复上传，上传失败单张跳过
 - **敏感字段保护** —— `authorization` 不会明文返回前端，仅显示长度摘要；配置文件写入权限 `0600`
 
 ---
@@ -167,6 +169,36 @@ const client = new Anthropic({
 | `thinking` | boolean | 开启深度思考模式 |
 | `search` | boolean | 开启联网搜索 |
 
+### 图片输入（vision）
+
+两个兼容端点都接受标准协议里的图片块，代理会自动上传到 DeepSeek 并在请求中引用：
+
+```bash
+# OpenAI 风格
+curl http://127.0.0.1:3001/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "deepseek-chat",
+    "stream": true,
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "描述这张图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+      ]
+    }]
+  }'
+```
+
+Anthropic 风格用 `{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}`。
+
+行为约定：
+
+- **只处理最后一条 user 消息里的图片**——历史图片不会每轮重复上传；历史消息中的图片块在 prompt 里降级为 `[图片]` 占位，base64 数据不会写入 prompt。
+- **上传失败非致命**——单张失败只记 warning 并跳过，prompt 里保留 `[图片]` 占位，请求照常发出。
+- **原生端点不做图片转换**——`/api/v0/chat/completion` 是直通，需要自己先上传并填 `ref_file_ids`。
+- 单张图片大小受 `express.json` 的 50MB 上限约束。
+
 ---
 
 ## 接入 Claude Code（CC Switch + VSCode 插件）
@@ -248,8 +280,8 @@ CC Switch 用来在「Anthropic 官方」与「本地 DeepSeek 代理」之间�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | OpenAI 兼容对话端点 |
-| `POST` | `/v1/messages` | Anthropic 兼容对话端点 |
+| `POST` | `/v1/chat/completions` | OpenAI 兼容对话端点（支持图片输入） |
+| `POST` | `/v1/messages` | Anthropic 兼容对话端点（支持图片输入） |
 | `POST` | `/api/v0/chat/completion` | DeepSeek 原生端点（直通，保留原始 SSE） |
 | `GET` | `/admin/api/config` | 读取当前配置与运行统计（`runtime` 含 `totalRequests`、`successRequests`、`failedRequests`、`retriedRequests`、`throttledRequests`、`lastRequestAt`、`lastError`、`lastErrorAt`、`uptimeMs`、`pid`、`node`、`configPath`） |
 | `PUT` | `/admin/api/config` | 更新配置并持久化 |
@@ -314,7 +346,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 │   ├── logger.js       # 日志：makeLog / writeToFile / rotateIfNeeded / formatExchange
 │   ├── stats.js        # 运行统计与 recordError
 │   ├── config.js       # 配置加载 / 校验 / 持久化（含环境变量覆盖）
-│   ├── pow.js          # PoW challenge 获取与求解，生成 x-ds-pow-response
+│   ├── pow.js          # PoW challenge 获取与求解，生成 x-ds-pow-response（支持 targetPath 覆盖）
 │   ├── routes/
 │   │   ├── openai.js     # OpenAI 兼容端点 /v1/chat/completions
 │   │   ├── anthropic.js  # Anthropic 兼容端点 /v1/messages
@@ -323,6 +355,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 │   ├── upstream/
 │   │   ├── client.js     # 上游请求：请求头构造、fetchWithRetry、forwardToDeepSeek
 │   │   ├── sse.js        # DeepSeek SSE 解析：iterateDeepSeekEvents / extractDeepSeekText / collectDeepSeek
+│   │   ├── upload.js     # 图片上传：uploadImage / uploadImages（file/upload_file 换 file_id）
 │   │   └── throttle.js   # 两层限速：throttle（每分钟计数）+ waitForInterval（最小间隔）
 │   ├── adapters/
 │   │   ├── openai.js     # streamAsOpenAI：转为 OpenAI 流式事件（含 tool_calls 状态机）
@@ -330,7 +363,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 │   │   └── usage.js      # token 估算，填充 usage 字段
 │   └── tools/
 │       ├── index.js      # tools 层聚合入口
-│       ├── prompt.js     # Prompt 构造：buildPromptFromMessages / formatToolsInstruction
+│       ├── prompt.js     # Prompt 构造：buildPromptFromMessages / formatToolsInstruction / extractImagesFromMessages
 │       ├── buffer.js     # ToolCallBuffer：流式工具标签缓冲与切分
 │       ├── parse.js      # 工具调用解析：JSON 与 DSML、balanceBrackets、fixRawNewlinesInJson、fixInvalidJsonEscapes、coerceDsmlValue
 │       ├── residue.js    # 工具标签正则常量、字符串状态机、stripToolCallResidue 残留清洗
@@ -344,11 +377,11 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
     │   └── base.css      # 两页共用的 CSS 变量与原子样式（按钮、圆点、代码块）
     ├── config/
     │   ├── index.html    # 配置管理页
-    │   ├── app.js        # 配置页逻辑（表单分组、敏感字段掩码）
+    │   ├── app.js        # 配置页逻辑（Tab 布局、分组表单、敏感字段掩码）
     │   └── style.css     # 配置页布局样式
     └── test/
         ├── index.html    # 对话测试页
-        ├── app.js        # 测试页逻辑（SSE 解析、消息渲染）
+        ├── app.js        # 测试页逻辑（端点切换、图片选择、SSE 解析、消息渲染）
         └── style.css     # 测试页布局样式
 ```
 
@@ -366,11 +399,13 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 - `fetchWithRetry()` —— 指数退避 + 抖动，最大 16s，支持 `Retry-After`
 - `extractDeepSeekText()` —— 从 DeepSeek 的 `BATCH` / `fragments` / `APPEND` 事件中还原文本
 - `collectDeepSeek()` —— 非流式场景下聚合完整响应
+- `uploadImage()` / `uploadImages()` —— 图片上传到 `file/upload_file` 换取 `file_id`；批量上传单张失败只警告不中断，自建重试循环（multipart body 需每次重建）
 
 **`src/adapters/`**
 - `streamAsOpenAI()` / `streamAsAnthropic()` —— 将上游 SSE 转换为对应协议的流式事件（含 `tool_calls` / `tool_use` 状态机）
 
 **`src/tools/`**
+- `extractImagesFromMessages()` —— 从最后一条 user 消息里提取 base64 图片（兼容 OpenAI `image_url` 与 Anthropic `image` 两种块），图片块替换为 `[图片]` 占位，base64 不进入 prompt；历史消息中的图片在 `formatUserContentInner()` 里同样降级为 `[图片]`
 - `buildPromptFromMessages()` —— 把 OpenAI / Anthropic 的 messages 结构压平成 DeepSeek 单条 prompt
 - `formatToolsInstruction()` —— 生成工具清单与调用格式说明，注入 prompt
 - `ToolCallBuffer` —— 流式增量解析器，识别 `<tool_call>` 与 DSML 两种格式，容忍跨 chunk 截断、全角/半角竖线混用、缺失外层包裹等异常；用字符串状态机保证 content 里的标签字面量不被误切
@@ -381,8 +416,8 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 - `summarizeArgs()` —— `prompt.js` 内部函数（不导出），把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
 
 **`src/pow.js`**
-- `fetchChallenge()` —— 调用 `create_pow_challenge` 获取 challenge
-- `solveAndBuildHeader()` —— WASM 求解后 base64 编码，作为 `x-ds-pow-response` 发送
+- `fetchChallenge(cfg, targetPath)` —— 调用 `create_pow_challenge` 获取 challenge；`targetPath` 可覆盖 `cfg.powTargetPath`（图片上传接口的 target 与 completion 不同）
+- `solveAndBuildHeader(cfg, targetPath)` —— WASM 求解后 base64 编码，作为 `x-ds-pow-response` 发送
 
 ---
 

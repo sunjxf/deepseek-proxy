@@ -7,7 +7,7 @@
 
 import { getConfig } from '../config.js';
 import { stats, recordError } from '../stats.js';
-import { makeLog, newRequestId, preview, dumpBody } from '../logger.js';
+import { makeLog, newRequestId, preview, dumpBody, formatExchange } from '../logger.js';
 import { throttle, waitForInterval } from '../upstream/throttle.js';
 import { forwardToDeepSeek } from '../upstream/client.js';
 import { getSessionId } from '../upstream/session.js';

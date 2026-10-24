@@ -137,7 +137,7 @@ export function updateConfig(patch = {}) {
     changed.push(key);
   }
 
-  next.port = Number(next.port) || 3000;
+  next.port = Number(next.port) || DEFAULTS.port;
   next.requestTimeoutMs = Number(next.requestTimeoutMs) || 120000;
   next.maxRetries = Number.isFinite(Number(next.maxRetries))
     ? Math.max(0, Math.min(8, Number(next.maxRetries)))

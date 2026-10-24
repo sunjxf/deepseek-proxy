@@ -25,6 +25,7 @@ import {
   tryParseJson,
   scanDsmlInvokeBlocks,
   makeBareInvokeAnchor,
+  buildCallsFromParsed,
 } from './parse.js';
 import { tlog, tp, formatCalls } from './log.js';
 
@@ -351,18 +352,9 @@ export class ToolCallBuffer {
   }
 
   _buildCallsFromParsed(parsed) {
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    const calls = [];
-    for (const c of arr) {
-      if (!c || typeof c !== 'object') continue;
-      const name = c.name || c.function?.name;
-      let args = c.arguments ?? c.input ?? c.function?.arguments ?? {};
-      if (typeof args === 'string') {
-        try { args = JSON.parse(args); } catch { /* 保留字符串 */ }
-      }
-      if (name) calls.push({ name, arguments: args });
-    }
-    return calls.length > 0 ? calls : null;
+    // 委托 parse.js 的共享实现，保证与 parseToolCallsJson 行为一致
+    // （含平铺参数形状回退）。
+    return buildCallsFromParsed(parsed);
   }
 
   _finish(out) {

@@ -60,6 +60,21 @@ export function parseToolCallsJson(body) {
     return null;
   }
 
+  return buildCallsFromParsed(parsed);
+}
+
+/**
+ * 把解析出的 JSON 值（单个对象或数组）转成 { name, arguments } 调用列表。
+ *
+ * 支持两种参数形状：
+ *   - 标准嵌套：{"name":"Edit","arguments":{...}}（也有 input / function.arguments 变体）
+ *   - 平铺：{"name":"Edit","file_path":"...","old_string":"..."}，参数与 name 同级
+ *     （Claude Code 风格，模型偶尔会这么写）
+ *
+ * 平铺回退只在没有 arguments / input / function.arguments 时启用，避免把
+ * 真正的 arguments 覆盖掉。
+ */
+export function buildCallsFromParsed(parsed) {
   const arr = Array.isArray(parsed) ? parsed : [parsed];
   const calls = [];
 
@@ -67,7 +82,13 @@ export function parseToolCallsJson(body) {
     if (!c || typeof c !== 'object') continue;
 
     const name = c.name || c.function?.name;
-    let args = c.arguments ?? c.input ?? c.function?.arguments ?? {};
+    let args = c.arguments ?? c.input ?? c.function?.arguments;
+
+    if (args === undefined) {
+      // 平铺形状：收集除 name / function 外的顶层字段
+      const { name: _name, function: _fn, ...rest } = c;
+      args = rest;
+    }
 
     if (typeof args === 'string') {
       try {

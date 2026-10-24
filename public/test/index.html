@@ -11,8 +11,16 @@
 
   <div class="topbar">
     <div class="field">
+      <label for="endpoint-select">端点</label>
+      <select id="endpoint-select">
+        <option value="/v1/chat/completions">OpenAI · /v1/chat/completions</option>
+        <option value="/v1/messages">Anthropic · /v1/messages</option>
+        <option value="/api/v0/chat/completion">Native · /api/v0/chat/completion</option>
+      </select>
+    </div>
+    <div class="field">
       <label for="session-input">chat_session_id</label>
-      <input id="session-input" type="text" placeholder="从配置页读取，或手动填写" autocomplete="off" />
+      <input id="session-input" type="text" placeholder="从配置页读取，或手动填写（native 必填）" autocomplete="off" />
     </div>
     <button id="btn-clear" class="btn" type="button">清空</button>
     <label class="switch" title="在每条回复下显示上游原始 SSE">
@@ -35,7 +43,10 @@
   </div>
 
   <div class="composer">
+    <div class="thumbs" id="thumbs" hidden></div>
     <div class="inner">
+      <button id="btn-attach" class="btn" type="button" title="添加图片（仅兼容端点）">📎</button>
+      <input id="file-input" type="file" accept="image/*" multiple hidden />
       <textarea id="prompt" rows="1" placeholder="输入内容，Enter 发送，Shift+Enter 换行"></textarea>
       <button id="btn-send" class="btn primary" type="button">发送</button>
     </div>
@@ -43,6 +54,7 @@
       <label class="switch"><input id="thinking-switch" type="checkbox" /> thinking_enabled</label>
       &nbsp;&nbsp;
       <label class="switch"><input id="search-switch" type="checkbox" /> search_enabled</label>
+      <span id="image-hint" style="color:#5c6678; margin-left:10px"></span>
     </div>
   </div>
 

@@ -41,6 +41,11 @@
     state.raw = e.target.checked;
     document.querySelectorAll('.raw-block').forEach((el) => {
       el.hidden = !state.raw;
+      // 打开时把已累积但未渲染的原始行补写进 DOM
+      const msg = el.closest('.msg');
+      if (state.raw && msg && msg._raw && msg._rawLines) {
+        msg._raw.textContent = msg._rawLines.slice(-2000).join('\n');
+      }
     });
   });
 
@@ -247,6 +252,8 @@
 
     const pushRaw = (line) => {
       rawLines.push(line);
+      // 挂到消息上，供 raw-switch 变更时回填
+      assistant._rawLines = rawLines;
       if (state.raw) {
         const view = rawLines.slice(-2000).join('\n');
         assistant._raw.textContent = view;

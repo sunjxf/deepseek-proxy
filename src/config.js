@@ -37,8 +37,11 @@ const DEFAULTS = {
   powChallengeUrl: 'https://chat.deepseek.com/api/v0/chat/create_pow_challenge',
   powTargetPath: '/api/v0/chat/completion',
 
-  // 默认会话
+  // 默认会话（忽略，仅保留兼容）
   chatSessionId: '',
+
+  // 自动会话：每个会话最多被使用多少次，达到后自动创建新会话
+  sessionMaxUses: 30,
 
   // 上游凭证
   authorization: '',
@@ -141,6 +144,9 @@ export function updateConfig(patch = {}) {
     : 4;
   next.retryBaseDelayMs = Number(next.retryBaseDelayMs) || 1000;
   next.maxRequestsPerMinute = Number(next.maxRequestsPerMinute) || 0;
+  next.sessionMaxUses = Number.isFinite(Number(next.sessionMaxUses))
+    ? Math.max(1, Number(next.sessionMaxUses))
+    : 30;
   next.requestIntervalMs = Number.isFinite(Number(next.requestIntervalMs))
     ? Math.max(0, Number(next.requestIntervalMs))
     : 0;

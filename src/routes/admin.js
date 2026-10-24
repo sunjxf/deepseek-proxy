@@ -13,6 +13,7 @@ import {
   CONFIG_PATH,
 } from '../config.js';
 import { forwardToDeepSeek } from '../upstream/client.js';
+import { getSessionId } from '../upstream/session.js';
 import { stats } from '../stats.js';
 
 export function registerAdminRoutes(app) {
@@ -51,7 +52,7 @@ export function registerAdminRoutes(app) {
 
     try {
       const upstream = await forwardToDeepSeek(cfg, req, 'ping', {
-        chatSessionId: cfg.chatSessionId || crypto.randomUUID(),
+        sessionId: await getSessionId(cfg, req),
       });
 
       const text = await upstream.text();

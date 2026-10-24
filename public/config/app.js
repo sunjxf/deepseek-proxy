@@ -46,15 +46,21 @@ const GROUPS = [
     ],
   },
   {
-    title: '默认会话',
-    desc: '测试页和代理请求在未提供 chat_session_id 时会使用这里的默认值。',
+    title: '会话',
+    desc: '代理会自动调用 chat_session/create 创建会话，用满 sessionMaxUses 次后自动换新。',
     fields: [
       {
+        key: 'sessionMaxUses',
+        label: '每个会话最大使用次数',
+        type: 'number',
+        hint: '自动创建的会话被使用这么多次后重建，默认 30',
+      },
+      {
         key: 'chatSessionId',
-        label: 'chat_session_id',
+        label: '备用 chat_session_id',
         type: 'text',
         wide: true,
-        hint: '从浏览器地址栏 .../a/chat/s/<这一段> 复制',
+        hint: '自动创建会话失败时使用；从浏览器地址栏 .../a/chat/s/<这一段> 复制',
       },
     ],
   },

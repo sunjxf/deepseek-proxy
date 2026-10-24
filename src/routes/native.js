@@ -12,6 +12,7 @@ import {
   buildUpstreamHeaders,
   fetchWithRetry,
 } from '../upstream/client.js';
+import { getSessionId } from '../upstream/session.js';
 import { throttle, waitForInterval } from '../upstream/throttle.js';
 import { stats, recordError } from '../stats.js';
 import { makeLog, newRequestId, dumpBody } from '../logger.js';
@@ -38,8 +39,8 @@ export function registerNativeRoutes(app) {
       await waitForInterval();
 
       const body = { ...req.body };
-      if (!body.chat_session_id && cfg.chatSessionId) {
-        body.chat_session_id = cfg.chatSessionId;
+      if (!body.chat_session_id) {
+        body.chat_session_id = await getSessionId(cfg, req, lg);
       }
 
       let powHeader = null;

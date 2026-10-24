@@ -7,6 +7,7 @@
 
 import { getConfig } from '../config.js';
 import { forwardToDeepSeek } from '../upstream/client.js';
+import { getSessionId } from '../upstream/session.js';
 import { throttle, waitForInterval } from '../upstream/throttle.js';
 import { collectDeepSeek } from '../upstream/sse.js';
 import { streamAsAnthropic } from '../adapters/anthropic.js';
@@ -61,12 +62,14 @@ export function registerAnthropicRoutes(app) {
       }
 
       const stream = req.body.stream !== false;
+      const sessionId = await getSessionId(cfg, req, lg);
 
       const upstream = await forwardToDeepSeek(
         cfg,
         req,
         prompt,
         {
+          sessionId,
           thinking: !!req.body.thinking,
           search: !!req.body.search,
         },

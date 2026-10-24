@@ -33,7 +33,7 @@ export function buildUpstreamHeaders(cfg, req, powHeader) {
     'x-client-locale': 'zh_CN',
     'x-client-platform': 'web',
     'x-client-timezone-offset': '28800',
-    'x-client-version': '2.5.0',
+    'x-client-version': '2.7.0',
   };
 
   if (cfg.authorization) headers.authorization = cfg.authorization;
@@ -132,7 +132,7 @@ export async function fetchWithRetry(url, options, cfg, onRetry, lg = log) {
 
 export async function forwardToDeepSeek(cfg, req, prompt, opts = {}, lg = log) {
   const body = {
-    chat_session_id: opts.chatSessionId || cfg.chatSessionId,
+    chat_session_id: opts.sessionId || opts.chatSessionId || cfg.chatSessionId,
     parent_message_id: null,
     model_type: 'default',
     prompt,

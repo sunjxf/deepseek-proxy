@@ -10,6 +10,7 @@ import { stats, recordError } from '../stats.js';
 import { makeLog, newRequestId, preview, dumpBody } from '../logger.js';
 import { throttle, waitForInterval } from '../upstream/throttle.js';
 import { forwardToDeepSeek } from '../upstream/client.js';
+import { getSessionId } from '../upstream/session.js';
 import { streamAsOpenAI } from '../adapters/openai.js';
 import { collectDeepSeek } from '../upstream/sse.js';
 import { makeUsage } from '../adapters/usage.js';
@@ -57,12 +58,14 @@ export function registerOpenAIRoutes(app) {
       }
 
       const stream = !!req.body.stream;
+      const sessionId = await getSessionId(cfg, req, lg);
 
       const upstream = await forwardToDeepSeek(
         cfg,
         req,
         prompt,
         {
+          sessionId,
           thinking: !!req.body.thinking,
           search: !!req.body.search,
         },

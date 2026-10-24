@@ -5,6 +5,7 @@
  */
 
 import { ToolCallBuffer } from '../tools/buffer.js';
+import { tlog, tp } from '../tools/log.js';
 
 /* ---------- DeepSeek SSE 文本提取 ---------- */
 
@@ -70,7 +71,9 @@ export async function* iterateDeepSeekEvents(upstream) {
           try {
             yield JSON.parse(data);
           } catch {
-            /* skip */
+            tlog('debug', 'SSE data 行非 JSON，已跳过', {
+              preview: tp(data, 120),
+            });
           }
         }
       }
@@ -86,7 +89,9 @@ export async function* iterateDeepSeekEvents(upstream) {
         try {
           yield JSON.parse(data);
         } catch {
-          /* skip */
+          tlog('debug', 'SSE 尾部 data 行非 JSON，已跳过', {
+            preview: tp(data, 120),
+          });
         }
       }
     }

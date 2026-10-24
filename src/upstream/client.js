@@ -6,7 +6,7 @@
  */
 
 import { solveAndBuildHeader } from '../pow.js';
-import { recordError } from '../stats.js';
+import { recordError, stats } from '../stats.js';
 import { makeLog } from '../logger.js';
 
 const log = makeLog('proxy');
@@ -48,6 +48,23 @@ export function buildUpstreamHeaders(cfg, req, powHeader) {
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
+/**
+ * 估算请求体字节数用于日志。
+ *
+ * options.body 可能是 string / Buffer / FormData / ReadableStream；
+ * Buffer.byteLength() 只接受前两者，对其他类型会抛 TypeError，
+ * 所以这里按类型分派，拿不到大小时返回 undefined。
+ */
+function bodyByteLength(body) {
+  if (!body) return 0;
+  if (typeof body === 'string') return Buffer.byteLength(body);
+  if (Buffer.isBuffer(body) || ArrayBuffer.isView(body)) {
+    return body.byteLength;
+  }
+  // FormData / ReadableStream 等：大小由 fetch 内部序列化时才知道
+  return undefined;
+}
+
 function calcDelay(attempt, retryAfterHeader, baseDelay) {
   if (retryAfterHeader) {
     const sec = Number(retryAfterHeader);
@@ -74,7 +91,7 @@ export async function fetchWithRetry(url, options, cfg, onRetry, lg = log) {
         url,
         attempt,
         timeoutMs,
-        bodyBytes: options.body ? Buffer.byteLength(options.body) : 0,
+        bodyBytes: bodyByteLength(options.body),
       });
 
       const res = await fetch(url, { ...options, signal: controller.signal });
@@ -136,7 +153,7 @@ export async function forwardToDeepSeek(cfg, req, prompt, opts = {}, lg = log) {
     parent_message_id: null,
     model_type: 'default',
     prompt,
-    ref_file_ids: [],
+    ref_file_ids: Array.isArray(opts.refFileIds) ? opts.refFileIds : [],
     thinking_enabled: !!opts.thinking,
     search_enabled: !!opts.search,
     action: null,
@@ -160,6 +177,14 @@ export async function forwardToDeepSeek(cfg, req, prompt, opts = {}, lg = log) {
   } else if (req.headers['x-ds-pow-response']) {
     lg.debug('pow', '复用客户端提供的 PoW 头');
   }
+
+  lg.debug('forward', '上游请求参数', {
+    sessionId: body.chat_session_id,
+    promptChars: prompt.length,
+    refFileIds: body.ref_file_ids.length,
+    thinking: body.thinking_enabled,
+    search: body.search_enabled,
+  });
 
   return fetchWithRetry(
     cfg.upstreamUrl,

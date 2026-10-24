@@ -24,9 +24,10 @@ async function ensureSolver() {
   return solverInstance;
 }
 
-export async function fetchChallenge(cfg) {
+export async function fetchChallenge(cfg, targetPath) {
   const started = Date.now();
-  plog('debug', '获取 PoW challenge', { url: cfg.powChallengeUrl });
+  const path = targetPath || cfg.powTargetPath;
+  plog('debug', '获取 PoW challenge', { url: cfg.powChallengeUrl, targetPath: path });
 
   const res = await fetch(cfg.powChallengeUrl, {
     method: 'POST',
@@ -43,7 +44,7 @@ export async function fetchChallenge(cfg) {
       'x-client-timezone-offset': '28800',
       'x-client-version': '2.5.0',
     },
-    body: JSON.stringify({ target_path: cfg.powTargetPath }),
+    body: JSON.stringify({ target_path: path }),
   });
 
   if (!res.ok) {
@@ -89,10 +90,10 @@ export async function fetchChallenge(cfg) {
   return challenge;
 }
 
-export async function solveAndBuildHeader(cfg) {
+export async function solveAndBuildHeader(cfg, targetPath) {
   const started = Date.now();
   const solver = await ensureSolver();
-  const challenge = await fetchChallenge(cfg);
+  const challenge = await fetchChallenge(cfg, targetPath);
 
   const payload = solver.solve(challenge);
 

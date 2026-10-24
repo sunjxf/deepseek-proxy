@@ -19,9 +19,11 @@ import {
   buildPromptFromMessages,
   extractSystemText,
   formatToolsInstruction,
+  extractImagesFromMessages,
   newMessageId,
   newToolUseId,
 } from '../tools/index.js';
+import { uploadImages } from '../upstream/upload.js';
 
 const log = makeLog('proxy');
 
@@ -44,8 +46,17 @@ export function registerAnthropicRoutes(app) {
       await throttle();
       await waitForInterval();
 
+      // 先提取最后一条 user 消息里的 base64 图片，再构造 prompt
+      const { images, messages } = extractImagesFromMessages(req.body.messages);
+      if (images.length > 0) {
+        lg.debug('anthropic', '已提取待上传图片', {
+          count: images.length,
+          totalBytes: images.reduce((n, i) => n + (i.buffer?.length || 0), 0),
+        });
+      }
+
       const prompt = buildPromptFromMessages(
-        req.body.messages,
+        messages,
         extractSystemText(req.body.system),
         formatToolsInstruction(req.body.tools)
       );
@@ -62,6 +73,16 @@ export function registerAnthropicRoutes(app) {
       }
 
       const stream = req.body.stream !== false;
+
+      // 上传图片（若最后一条 user 消息含 base64 图片），拿到 file_id 供上游引用
+      const refFileIds = await uploadImages(cfg, req, images, lg);
+      if (images.length > 0) {
+        lg.info('anthropic', '图片处理完成', {
+          requested: images.length,
+          uploaded: refFileIds.length,
+        });
+      }
+
       const sessionId = await getSessionId(cfg, req, lg);
 
       const upstream = await forwardToDeepSeek(
@@ -72,6 +93,7 @@ export function registerAnthropicRoutes(app) {
           sessionId,
           thinking: !!req.body.thinking,
           search: !!req.body.search,
+          refFileIds,
         },
         lg
       );

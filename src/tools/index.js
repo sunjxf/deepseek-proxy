@@ -9,6 +9,7 @@ export {
   buildPromptFromMessages,
   extractSystemText,
   formatToolsInstruction,
+  extractImagesFromMessages,
 } from './prompt.js';
 
 export { ToolCallBuffer } from './buffer.js';

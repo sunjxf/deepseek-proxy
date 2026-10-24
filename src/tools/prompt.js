@@ -56,6 +56,120 @@ export function extractSystemText(system) {
   return '';
 }
 
+/* ---------- 图片提取 ---------- */
+
+/**
+ * 从最后一条 user 消息里提取 base64 图片。
+ *
+ * 支持两种格式：
+ *   OpenAI:    { type: 'image_url', image_url: { url: 'data:image/png;base64,...' } }
+ *   Anthropic: { type: 'image', source: { type: 'base64', media_type, data } }
+ *
+ * 只处理最后一条 user 消息（历史图片不重复上传，避免每次请求都重传历史图）。
+ * 返回的 images 供调用方上传，messages 中图片块已被剔除，不会进入 prompt 文本。
+ *
+ * @param {Array} messages 原始消息数组
+ * @returns {{ images: Array<{mime: string, buffer: Buffer, name: string}>, messages: Array }}
+ */
+export function extractImagesFromMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { images: [], messages };
+  }
+
+  // 从后往前找最后一条 user 消息
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx === -1) return { images: [], messages };
+
+  const target = messages[lastUserIdx];
+  if (!Array.isArray(target.content)) return { images: [], messages };
+
+  const images = [];
+  const keptBlocks = [];
+
+  for (const block of target.content) {
+    const img = imageFromBlock(block);
+    if (img) {
+      images.push(img);
+      // 同步插入文本占位：上传失败时模型仍知道这里有一张图，
+      // 上传成功时占位文本与图片并存，语义可接受。
+      keptBlocks.push({ type: 'text', text: '[图片]' });
+      continue;
+    }
+    keptBlocks.push(block);
+  }
+
+  if (images.length === 0) return { images: [], messages };
+
+  const nextMessages = messages.slice();
+  nextMessages[lastUserIdx] = { ...target, content: keptBlocks };
+
+  logTransform(
+    'extractImagesFromMessages',
+    `user 消息含 ${images.length} 张图片`,
+    nextMessages[lastUserIdx].content
+  );
+
+  return { images, messages: nextMessages };
+}
+
+function imageFromBlock(block) {
+  if (!block || typeof block !== 'object') return null;
+
+  // OpenAI 风格：image_url 支持字符串或 { url }
+  if (block.type === 'image_url') {
+    const url =
+      typeof block.image_url === 'string' ? block.image_url : block.image_url?.url;
+    const parsed = parseDataUrl(url);
+    if (parsed) return parsed;
+    return null;
+  }
+
+  // Anthropic 风格
+  if (block.type === 'image' && block.source?.type === 'base64') {
+    const mime = block.source.media_type || 'image/png';
+    try {
+      const buffer = Buffer.from(block.source.data || '', 'base64');
+      if (buffer.length === 0) return null;
+      return { mime, buffer, name: `image.${extFromMime(mime)}` };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/** 拆解 data URL，非 data URL 返回 null */
+function parseDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') return null;
+  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
+  if (!m) return null;
+  const mime = m[1] || 'image/png';
+  const buffer = m[2]
+    ? Buffer.from(m[3] || '', 'base64')
+    : Buffer.from(decodeURIComponent(m[3] || ''), 'utf8');
+  if (buffer.length === 0) return null;
+  return { mime, buffer, name: `image.${extFromMime(mime)}` };
+}
+
+function extFromMime(mime) {
+  const map = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/bmp': 'bmp',
+  };
+  return map[mime] || 'bin';
+}
+
 export function buildPromptFromMessages(messages, systemText, toolsInstruction) {
   const parts = [];
   if (systemText) parts.push(systemText);
@@ -185,6 +299,10 @@ function formatUserContentInner(content) {
     }
     if (block.type === 'text') {
       parts.push(sanitizeText(block.text || ''));
+    } else if (block.type === 'image' || block.type === 'image_url') {
+      // 图片块已由 extractImagesFromMessages 单独提取上传，
+      // 这里不把 base64 数据或对象字符串写进 prompt。
+      parts.push('[图片]');
     } else if (block.type === 'tool_result') {
       const inner = formatToolResultContent(block.content);
       const isError = block.is_error ? '（执行失败）' : '';

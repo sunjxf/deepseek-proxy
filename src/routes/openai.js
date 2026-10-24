@@ -18,7 +18,9 @@ import {
   buildPromptFromMessages,
   extractSystemText,
   formatToolsInstruction,
+  extractImagesFromMessages,
 } from '../tools/index.js';
+import { uploadImages } from '../upstream/upload.js';
 
 export function registerOpenAIRoutes(app) {
   app.post('/v1/chat/completions', async (req, res) => {
@@ -40,8 +42,17 @@ export function registerOpenAIRoutes(app) {
       await throttle();
       await waitForInterval();
 
+      // 先提取最后一条 user 消息里的 base64 图片，再构造 prompt
+      const { images, messages } = extractImagesFromMessages(req.body.messages);
+      if (images.length > 0) {
+        lg.debug('openai', '从最后一条 user 消息提取图片', {
+          images: images.length,
+          bytes: images.reduce((n, img) => n + (img.buffer?.length || 0), 0),
+        });
+      }
+
       const prompt = buildPromptFromMessages(
-        req.body.messages,
+        messages,
         extractSystemText(req.body.system),
         formatToolsInstruction(req.body.tools)
       );
@@ -60,6 +71,15 @@ export function registerOpenAIRoutes(app) {
       const stream = !!req.body.stream;
       const sessionId = await getSessionId(cfg, req, lg);
 
+      // 上传图片；单张失败已在 uploadImages 内记录并跳过，不影响请求
+      const refFileIds = await uploadImages(cfg, req, images, lg);
+      if (images.length > 0 && refFileIds.length < images.length) {
+        lg.warn('openai', '部分图片上传失败，将继续以文本 prompt 请求', {
+          images: images.length,
+          uploaded: refFileIds.length,
+        });
+      }
+
       const upstream = await forwardToDeepSeek(
         cfg,
         req,
@@ -68,6 +88,7 @@ export function registerOpenAIRoutes(app) {
           sessionId,
           thinking: !!req.body.thinking,
           search: !!req.body.search,
+          refFileIds,
         },
         lg
       );

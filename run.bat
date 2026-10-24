@@ -96,12 +96,12 @@ echo.
 echo [OK] server is running in background
 echo   PID        : %NEW_PID%
 echo   console log: %OUT_LOG%
-echo   app log    : %ROOT%logs\app.log
+echo   app log    : %ROOT%logs\app-YYYY-MM-DD.log  (daily, rotated)
 echo   stop with  : stop.bat
 echo.
 
 rem read port from config and print access URL
-node -e "const c=require('fs').readFileSync('config.json','utf8');const j=JSON.parse(c);console.log('   admin page : http://'+(j.host||'127.0.0.1')+':'+(j.port||3000)+'/admin')" 2>nul
+node -e "const c=require('fs').readFileSync('config.json','utf8');const j=JSON.parse(c);console.log('   admin page : http://'+(j.host||'127.0.0.1')+':'+(j.port||3001)+'/admin')" 2>nul
 
 exit /b 0
 

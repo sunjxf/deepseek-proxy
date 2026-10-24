@@ -8,6 +8,7 @@ const SENSITIVE = new Set(['authorization']);
 
 const GROUPS = [
   {
+    key: 'server',
     title: '服务设置',
     desc: '修改 host / port 后需要重启进程才会生效。',
     fields: [
@@ -33,6 +34,7 @@ const GROUPS = [
     ],
   },
   {
+    key: 'pow',
     title: 'PoW 自动求解',
     desc: '开启后代理会在每次请求前自动获取 challenge 并求解，无需手动填写 x-ds-pow-response。',
     fields: [
@@ -46,6 +48,7 @@ const GROUPS = [
     ],
   },
   {
+    key: 'session',
     title: '会话',
     desc: '代理会自动调用 chat_session/create 创建会话，用满 sessionMaxUses 次后自动换新。',
     fields: [
@@ -65,6 +68,7 @@ const GROUPS = [
     ],
   },
   {
+    key: 'auth',
     title: '上游凭证',
     desc: '来自浏览器已登录会话。请勿分享，不要提交到 Git。',
     fields: [
@@ -79,11 +83,14 @@ const GROUPS = [
   },
 ];
 
+const OVERVIEW_TAB = 'overview';
+
 const state = {
   config: null,
   runtime: null,
   dirty: {},
   cleared: new Set(),
+  activeTab: OVERVIEW_TAB,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -135,13 +142,22 @@ function renderForm() {
   const form = $('form');
   form.innerHTML = '';
 
-  for (const group of GROUPS) {
-    const card = document.createElement('section');
-    card.className = 'card';
+  // tab 导航：概览 + 各分组
+  const nav = document.createElement('nav');
+  nav.className = 'tabs';
+  nav.id = 'tabs';
 
-    const h = document.createElement('h2');
-    h.textContent = group.title;
-    card.appendChild(h);
+  const panes = document.createElement('div');
+  panes.className = 'panes';
+
+  nav.appendChild(makeTab(OVERVIEW_TAB, '运行状态'));
+
+  for (const group of GROUPS) {
+    nav.appendChild(makeTab(group.key, group.title));
+
+    const card = document.createElement('section');
+    card.className = 'card pane';
+    card.dataset.tab = group.key;
 
     if (group.desc) {
       const d = document.createElement('p');
@@ -155,8 +171,91 @@ function renderForm() {
     for (const f of group.fields) grid.appendChild(renderField(f));
     card.appendChild(grid);
 
-    form.appendChild(card);
+    panes.appendChild(card);
   }
+
+  // 概览 pane：运行状态面板
+  const overview = document.createElement('section');
+  overview.className = 'card pane';
+  overview.dataset.tab = OVERVIEW_TAB;
+
+  const oh = document.createElement('h2');
+  oh.textContent = '运行状态';
+  overview.appendChild(oh);
+
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  stats.id = 'stats';
+  overview.appendChild(stats);
+
+  panes.appendChild(overview);
+
+  form.append(nav, panes);
+
+  nav.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    setActiveTab(btn.dataset.tab);
+  });
+
+  setActiveTab(state.activeTab);
+  updateDirtyMarks();
+}
+
+function makeTab(key, label) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tab';
+  btn.dataset.tab = key;
+  btn.textContent = label;
+  const dot = document.createElement('span');
+  dot.className = 'tab-dot';
+  dot.hidden = true;
+  btn.appendChild(dot);
+  return btn;
+}
+
+function setActiveTab(key) {
+  state.activeTab = key;
+  const nav = $('tabs');
+  const panes = nav ? nav.parentElement.querySelector('.panes') : null;
+  if (!nav || !panes) return;
+
+  for (const btn of nav.querySelectorAll('.tab')) {
+    const on = btn.dataset.tab === key;
+    btn.classList.toggle('active', on);
+  }
+  for (const pane of panes.querySelectorAll('.pane')) {
+    pane.classList.toggle('active', pane.dataset.tab === key);
+  }
+}
+
+/** 未保存改动所在的 tab 打小圆点 */
+function updateDirtyMarks() {
+  const nav = $('tabs');
+  if (!nav) return;
+  const dirtyTabs = new Set();
+
+  for (const group of GROUPS) {
+    const key = group.key;
+    const touched =
+      group.fields.some((f) => f.key in state.dirty || state.cleared.has(f.key)) ||
+      group.fields.some((f) => f.type === 'checkbox' && isCheckboxDirty(f.key));
+    if (touched) dirtyTabs.add(key);
+  }
+
+  for (const btn of nav.querySelectorAll('.tab')) {
+    const dot = btn.querySelector('.tab-dot');
+    if (dot) dot.hidden = !dirtyTabs.has(btn.dataset.tab);
+  }
+}
+
+/** checkbox 无 dirty 记录，与已加载配置比较判断是否改动 */
+function isCheckboxDirty(key) {
+  const el = $(`f_${key}`);
+  const cfg = state.config || {};
+  if (!el) return false;
+  return el.checked !== (cfg[key] !== false);
 }
 
 function renderField(field) {
@@ -178,6 +277,7 @@ function renderField(field) {
     input.id = `f_${field.key}`;
     input.type = 'checkbox';
     input.checked = cfg[field.key] !== false;
+    input.addEventListener('change', updateDirtyMarks);
     inputWrap.appendChild(input);
     wrap.appendChild(inputWrap);
 
@@ -216,6 +316,11 @@ function renderField(field) {
     });
   } else {
     input.value = cfg[field.key] ?? '';
+    input.addEventListener('input', () => {
+      if (input.value === String(cfg[field.key] ?? '')) delete state.dirty[field.key];
+      else state.dirty[field.key] = input.value;
+      updateDirtyMarks();
+    });
   }
 
   inputWrap.appendChild(input);

@@ -38,7 +38,7 @@ npm install
 
 ### 配置
 
-编辑 `config.json`（首次启动会自动生成默认配置）：
+编辑 `config.json`（不存在时以默认值运行，首次启动不会自动写文件；在 `/admin` 保存一次后才会生成）：
 
 ```json
 {
@@ -55,6 +55,7 @@ npm install
   "powChallengeUrl": "https://chat.deepseek.com/api/v0/chat/create_pow_challenge",
   "powTargetPath": "/api/v0/chat/completion",
   "chatSessionId": "<你的会话 ID>",
+  "sessionMaxUses": 30,
   "authorization": "Bearer <你的 Token>"
 }
 ```
@@ -175,7 +176,7 @@ const client = new Anthropic({
 | `POST` | `/v1/chat/completions` | OpenAI 兼容对话端点 |
 | `POST` | `/v1/messages` | Anthropic 兼容对话端点 |
 | `POST` | `/api/v0/chat/completion` | DeepSeek 原生端点（直通，保留原始 SSE） |
-| `GET` | `/admin/api/config` | 读取当前配置与运行统计 |
+| `GET` | `/admin/api/config` | 读取当前配置与运行统计（`runtime` 含 `totalRequests`、`successRequests`、`failedRequests`、`retriedRequests`、`throttledRequests`、`lastRequestAt`、`lastError`、`lastErrorAt`、`uptimeMs`、`pid`、`node`、`configPath`） |
 | `PUT` | `/admin/api/config` | 更新配置并持久化 |
 | `POST` | `/admin/api/test` | 测试上游连通性 |
 | `GET` | `/admin` | 302 → `/admin/config/`（配置页） |
@@ -199,7 +200,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 
 修改 `host` / `port` 会返回 `restartRequired: true`，需重启进程生效。
 
-`GET /admin/api/config` 返回的 `runtime` 字段包含运行统计：`totalRequests`、`successRequests`、`failedRequests`、`retriedRequests`、`throttledRequests`、`lastError`、`uptimeMs`、`pid`、`node`、`configPath` 等。
+`GET /admin/api/config` 返回的 `runtime` 字段包含运行统计：`totalRequests`、`successRequests`、`failedRequests`、`retriedRequests`、`throttledRequests`、`lastRequestAt`、`lastError`、`lastErrorAt`、`uptimeMs`、`pid`、`node`、`configPath`。
 
 ---
 
@@ -218,10 +219,11 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `error` / `warn` / `info` / `debug` |
-| `LOG_FILE` | `<项目根>/logs/app.log` | 日志文件路径 |
+| `LOG_FILE` | `<项目根>/logs/app.log` | 日志文件路径模板；实际按天写成 `app-YYYY-MM-DD.log` |
 | `LOG_TO_FILE` | `1` | 设为 `0` 关闭文件日志，仅输出控制台 |
-| `LOG_MAX_BYTES` | `52428800`（50MB） | 单文件上限，超过后轮转为 `app.log.1` |
-| `LOG_BODY_MAX` | `1048576` | 请求体日志的最大字符数；`0` 完全关闭请求体日志 |
+| `LOG_MAX_BYTES` | `52428800`（50MB） | 单文件上限，超过后轮转为 `app-YYYY-MM-DD.log.1` |
+| `LOG_KEEP_DAYS` | `2` | 日志保留天数，过期文件自动清理；`0` 表示不清理 |
+| `LOG_BODY_MAX` | `1048576` | 请求体日志的最大字符数（UTF-16 字符，非字节）；`0` 只输出 `(已关闭)`，不记录请求体 |
 
 日志中会打印**清洗前/清洗后对照**（工具标签剥离前后），便于排查模型输出格式问题。
 
@@ -301,7 +303,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 - `fixRawNewlinesInJson()` —— 修复 JSON 字符串内的裸换行，避免 `JSON.parse` 失败
 - `fixInvalidJsonEscapes()` —— 只在字符串内部把非法反斜杠转义（如 Windows 路径 `d:\study` 里的 `\s` / `\l`）补成双反斜杠，避免整段 JSON 解析失败；字符串外不动
 - `coerceDsmlValue()` —— 按模型显式声明的类型转换参数，默认保留字符串（避免 `"007"` 被误转数字）
-- `summarizeArgs()` —— 把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
+- `summarizeArgs()` —— `prompt.js` 内部函数（不导出），把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
 
 **`src/pow.js`**
 - `fetchChallenge()` —— 调用 `create_pow_challenge` 获取 challenge
@@ -314,7 +316,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 - ⚠️ **不要暴露到公网。** 代理持有你的 DeepSeek 凭证，且默认无鉴权。
 - ⚠️ **`config.json` 含敏感凭证**，请加入 `.gitignore`，不要提交。
 - `logs/` 已在 `.gitignore` 中，日志可能包含完整请求体（受 `LOG_BODY_MAX` 控制），注意脱敏。
-- 会话 ID (`chatSessionId`) 决定上下文归属。若要开启新会话，清空该字段，代理会自动生成随机 UUID。
+- 会话 ID (`chatSessionId`) 作为回退值：代理会调用 `chat_session/create` 自动创建会话，并用 `sessionMaxUses` 控制复用次数（默认 30 次后重建）；创建失败时才退回 `chatSessionId`。清空该字段则完全依赖自动创建。
 - `authorization` 会过期，失效时重新从浏览器抓取即可。
 - 上游为网页端非公开 API，DeepSeek 可能随时调整结构，若报错请检查 `extractDeepSeekText()` 与 `pow.js` 的解析逻辑。
 - 限速默认值较保守（30 次/分钟、无强制间隔），如遇 429 请调低，如追求速度可适当调高并观察稳定性。

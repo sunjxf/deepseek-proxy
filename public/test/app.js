@@ -189,6 +189,8 @@
 
   function setStatus(text, cls) {
     $('status-text').textContent = text;
+    // 圆点与文案同步：'ok' / 'err' 同时作用于两者
+    $('status-text').className = 'status-text ' + (cls || '');
     $('dot').className = 'dot ' + (cls || '');
   }
 
@@ -600,4 +602,6 @@
 
   syncImageControls();
   loadConfig();
+  // 首屏即为「就绪」正常态，给圆点加 ok 类使其显示为绿色
+  setStatus('就绪', 'ok');
 })();

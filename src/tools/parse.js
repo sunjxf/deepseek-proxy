@@ -13,6 +13,7 @@ import {
   RE_DSML_PARAM_SCAN,
   findDsmlCallsEndStrict,
   fixRawNewlinesInJson,
+  fixInvalidJsonEscapes,
 } from './residue.js';
 import { tlog, tp } from './log.js';
 
@@ -34,6 +35,22 @@ export function parseToolCallsJson(body) {
           fixed: tp(balanced),
         });
         parsed = parsedFixed;
+      }
+    }
+  }
+
+  // 模型常把 Windows 路径写成单反斜杠（`d:\study`），`\s` / `\l` 不是
+  // 合法 JSON 转义，会让整段解析失败。修复非法转义后再试一次。
+  if (parsed === undefined) {
+    const escaped = fixInvalidJsonEscapes(body);
+    if (escaped !== body) {
+      const parsedEscaped = tryParseJson(escaped);
+      if (parsedEscaped !== undefined && parsedEscaped !== null) {
+        tlog('warn', 'JSON 含非法转义，已自动修复后解析成功', {
+          original: tp(body),
+          fixed: tp(escaped),
+        });
+        parsed = parsedEscaped;
       }
     }
   }
@@ -79,6 +96,16 @@ export function tryParseJson(text) {
   if (cleaned !== text) {
     try {
       return JSON.parse(cleaned);
+    } catch {
+      /* fallthrough */
+    }
+  }
+
+  // 非法反斜杠转义（单反斜杠 Windows 路径）会让解析整体失败，先修复再试
+  const escaped = fixInvalidJsonEscapes(cleaned !== text ? cleaned : text);
+  if (escaped !== (cleaned !== text ? cleaned : text)) {
+    try {
+      return JSON.parse(escaped);
     } catch {
       /* fallthrough */
     }

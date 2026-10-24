@@ -14,6 +14,7 @@ import {
   scanOutsideString,
   isOutsideString,
   fixRawNewlinesInJson,
+  fixInvalidJsonEscapes,
   stripToolCallResidue,
   stripToolResultResidue,
 } from './residue.js';
@@ -139,6 +140,11 @@ export class ToolCallBuffer {
       // 与 parseToolCallsJson 的修复路径保持一致：能修括号修好的也算合法终点
       const balanced = balanceBrackets(fixRawNewlinesInJson(body));
       if (balanced !== body && tryParseJson(balanced) !== undefined) {
+        return { endIdx: idx };
+      }
+      // 单反斜杠 Windows 路径等非法转义，修复后能解析也算合法终点
+      const escaped = fixInvalidJsonEscapes(body);
+      if (escaped !== body && tryParseJson(escaped) !== undefined) {
         return { endIdx: idx };
       }
     }

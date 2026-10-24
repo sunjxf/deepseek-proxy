@@ -119,6 +119,41 @@ export function fixRawNewlinesInJson(text) {
   return out;
 }
 
+/* ---------- 修复 JSON 字符串内的非法转义 ---------- */
+
+// 模型偶尔把 Windows 路径写成单反斜杠（`d:\study`），`\s` / `\l` 不是
+// 合法 JSON 转义，会让整段 JSON 解析失败。这里只在字符串内部把
+// 「反斜杠 + 非合法转义字符」补成双反斜杠，字符串外不动。
+export function fixInvalidJsonEscapes(text) {
+  if (!text) return text;
+  const VALID = '"\\/bfnrtu';
+  let out = '';
+  let inString = false;
+  let changed = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (!inString) {
+      out += c;
+      if (c === '"') inString = true;
+      continue;
+    }
+    if (c === '"') { inString = false; out += c; continue; }
+    if (c === '\\') {
+      const next = text[i + 1];
+      if (next !== undefined && VALID.includes(next)) {
+        out += c + next;
+        i++;
+      } else {
+        out += '\\\\';
+        changed = true;
+      }
+      continue;
+    }
+    out += c;
+  }
+  return changed ? out : text;
+}
+
 /* ---------- DSML 辅助函数 ---------- */
 
 export function findDsmlCallsStart(haystack, fromIndex = 0) {

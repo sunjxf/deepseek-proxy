@@ -169,6 +169,81 @@ const client = new Anthropic({
 
 ---
 
+## 接入 Claude Code（CC Switch + VSCode 插件）
+
+本代理暴露 Anthropic 兼容端点 `/v1/messages`，可以直接作为 Claude Code 的 API 后端，用 DeepSeek 代替 Anthropic 官方服务。配合 [CC Switch](https://github.com/farion1231/cc-switch) 管理多套配置，在 VSCode 的 Claude Code 插件里使用。
+
+### 工作原理
+
+```
+Claude Code（CLI / VSCode 插件）
+  -> ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+  -> POST /v1/messages          （Anthropic 协议）
+  -> deepseek-proxy 压平 prompt -> chat.deepseek.com
+```
+
+Claude Code 的工具调用（Read / Edit / Bash 等）走本代理的 `tool_use` / `tool_result` 转换，由 `src/tools/` 从模型自由文本中解析出结构化调用。
+
+### 1. 启动代理
+
+```bash
+npm start        # 或 run.bat
+```
+
+确认 `curl http://127.0.0.1:3001/admin/api/config` 能返回配置，且 `authorization` 有效。
+
+### 2. 配置 CC Switch
+
+CC Switch 用来在「Anthropic 官方」与「本地 DeepSeek 代理」之间一键切换，本质是改写 `~/.claude/settings.json` 的环境变量。在 CC Switch 中新增一个供应商：
+
+| 字段 | 值 |
+|---|---|
+| 名称 | DeepSeek Local（随意） |
+| API 地址 / Base URL | `http://127.0.0.1:3001` |
+| API Key / Token | 任意非空字符串（如 `not-needed`），代理不校验 |
+| 模型 | `deepseek-chat`（代理会忽略模型名，统一转发到网页端） |
+
+保存后点击「启用」，CC Switch 会把配置写入 Claude Code 的 settings 文件，等价于：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3001",
+    "ANTHROPIC_AUTH_TOKEN": "not-needed"
+  }
+}
+```
+
+> 部分 CC Switch 版本写入的是 `ANTHROPIC_API_KEY`，两者代理都不校验，任选其一。
+
+### 3. 在 VSCode 中使用
+
+1. 安装 VSCode 扩展 **Claude Code**（Anthropic 官方扩展）。
+2. 确保已通过 CC Switch 切换到 DeepSeek 供应商，或手动在集成终端里导出环境变量：
+
+   ```bash
+   # Windows PowerShell
+   $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3001"
+   $env:ANTHROPIC_AUTH_TOKEN = "not-needed"
+
+   # macOS / Linux
+   export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+   export ANTHROPIC_AUTH_TOKEN=not-needed
+   ```
+
+3. 打开命令面板（`Ctrl+Shift+P`）运行 `Claude Code: Open`，或点击侧边栏图标。
+4. 首次对话若报 `401` / `403`，说明环境变量未生效——重启 VSCode 或从已设置变量的终端启动 `code`。
+
+### 4. 注意事项
+
+- **模型名会被忽略。** 代理把所有请求转发到 DeepSeek 网页端，`model` 字段仅用于兼容协议，实际模型由网页端会话决定。
+- **上下文长度受限。** Claude Code 的 system prompt 与工具说明较长，prompt 压平后会占用较多上游 token；遇上游截断/报错可精简 `CLAUDE.md` 或减少同时开启的 MCP 工具。
+- **工具调用依赖解析器容错。** DeepSeek 输出的工具标记格式不稳定，本代理已做括号修复、裸换行、非法转义等兼容处理，仍可能出现工具调用失败；开启 `LOG_LEVEL=debug` 查看清洗前后对照。
+- **限速较保守。** Claude Code 一次任务可能连续发起多次请求，默认 30 次/分钟可能不够，可在 `/admin` 调高 `maxRequestsPerMinute`，遇 429 再调低。
+- **随时切回官方。** 在 CC Switch 中启用「Anthropic 官方」即可，无需卸载插件。
+
+---
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
@@ -325,4 +400,4 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 
 ## License
 
-Private.
+MIT.

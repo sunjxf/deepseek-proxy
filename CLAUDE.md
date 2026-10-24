@@ -62,6 +62,7 @@ OpenAI / Anthropic 两个兼容端点的数据流一致（native 端点直通，
 
 1. **工具标记绝不能泄漏进 prompt 历史。** `prompt.js` 内部的 `formatUserContent()`（不导出）在消息内容回到 prompt 前做清洗；否则模型会看到自己写坏的标记并模仿。
 2. **不要强制转换模型未声明的类型。** `coerceDsmlValue()` 默认保留字符串，只有模型显式写了 `type="number"` 之类才转换（所以 `"007"` 仍是字符串）。
+3. **转义修复只动字符串内部。** `fixInvalidJsonEscapes()` 必须在字符串状态内工作，把「反斜杠 + 非合法转义字符」补成 `\\`；结构位置（对象键、括号、逗号）不得改写。修完解析不了的仍应回退为正文，不得抛出。
 
 ### 关键约束：一切都是一条 prompt
 
@@ -69,9 +70,9 @@ DeepSeek 网页端 API 只接受一条扁平 `prompt` 字符串加 `chat_session
 
 ### 工具调用是从自由文本里解析出来的
 
-没有原生 function-calling 通道。工具通过 `formatToolsInstruction()` 写进 prompt，模型输出再由 `ToolCallBuffer` 扫描出调用标记。解析器刻意容忍畸形模型输出：两种标记方言（`<tool_call>` JSON 与 DeepSeek 原生 DSML，竖线全角 `｜` / 半角 `|` 混用）、括号缺失或多写（`balanceBrackets()`）、空白变体、跨 chunk 截断、未闭合标签。非调用文本经 `stripToolCallResidue()` 清掉残留标记后放行。
+没有原生 function-calling 通道。工具通过 `formatToolsInstruction()` 写进 prompt，模型输出再由 `ToolCallBuffer` 扫描出调用标记。解析器刻意容忍畸形模型输出：两种标记方言（`<tool_call>` JSON 与 DeepSeek 原生 DSML，竖线全角 `｜` / 半角 `|` 混用）、括号缺失或多写（`balanceBrackets()`）、字符串内裸换行（`fixRawNewlinesInJson()`）、字符串内非法反斜杠转义（`fixInvalidJsonEscapes()`，典型是模型把 Windows 路径写成 `d:\study`，`\s` / `\l` 非法）、空白变体、跨 chunk 截断、未闭合标签。非调用文本经 `stripToolCallResidue()` 清掉残留标记后放行。
 
-**`<tool_call>` 终点判定是反向扫描**：`ToolCallBuffer._findToolCallEndStrict()` 从后往前找 `</tool_call>`，取**最后一个**能解析出 JSON（直接解析或经 `balanceBrackets()` + `fixRawNewlinesInJson()` 修复后解析）的位置。所以正文里出现的字面 `</tool_call>` 不会被当成终点误切；代价是中间的可解析片段不会被选中作终点（而非被吞掉），解析范围一直延伸到最后一个合法位置。这看着像 bug，实为有意为之——改之前先想清楚模型会怎么写坏标签。
+**`<tool_call>` 终点判定是反向扫描**：`ToolCallBuffer._findToolCallEndStrict()` 从后往前找 `</tool_call>`，取**最后一个**能解析出 JSON（直接解析，或经 `balanceBrackets()` + `fixRawNewlinesInJson()` / `fixInvalidJsonEscapes()` 修复后解析）的位置。所以正文里出现的字面 `</tool_call>` 不会被当成终点误切；代价是中间的可解析片段不会被选中作终点（而非被吞掉），解析范围一直延伸到最后一个合法位置。这看着像 bug，实为有意为之——改之前先想清楚模型会怎么写坏标签。
 
 裸 DSML invoke（没有 `${PIPE}${PIPE}DSML${PIPE}${PIPE} calls` 外层包裹）由 `_consumeBareInvokes()` 通过 `scanDsmlInvokeBlocks()` 定位 invoke 块，取最后一个块的 `end` 作为消费长度（不校验块之间是否连续，中间夹的文本也会被一并消费）。
 
@@ -102,6 +103,6 @@ DeepSeek 网页端 API 只接受一条扁平 `prompt` 字符串加 `chat_session
 ## 坑
 
 - 上游是未公开的网页 API。DeepSeek 改响应结构时，修复点通常在 `extractDeepSeekText()`（事件结构）或 `pow.js`（challenge 结构），而不是适配器。
-- `config.json` 含有真实 `authorization` token，且目前**不在** `.gitignore` 里（`.gitignore` 只有 `node_modules`、`logs/`）。提交任何涉及 `config.json` 的改动前先把 `config.json` 加进 `.gitignore`；不要把内容回显进日志、提交或对话。
+- `config.json` 含有真实 `authorization` token，已在 `.gitignore` 里（`.gitignore` 为 `node_modules`、`logs/`、`config.json`）。不要把内容回显进日志、提交或对话；如果某份克隆里它已被跟踪，需先 `git rm --cached config.json` 才会真正脱离版本库。
 - `logs/` 可能包含完整请求体（受 `LOG_BODY_MAX` 限制，默认 1M 字符；设为 `0` 可关闭）。
 - 服务无鉴权，仅供本机使用。

@@ -15,7 +15,7 @@
 - **原生端点透传** —— `POST /api/v0/chat/completion` 直连 DeepSeek，保留原始 SSE 事件流
 - **限速与节流** —— 每分钟请求数上限 + 相邻请求最小间隔，双管齐下避免触发上游 429
 - **重试机制** —— 针对 `429 / 500 / 502 / 503 / 504` 指数退避重试，尊重 `Retry-After` 响应头
-- **工具调用解析** —— 兼容两种模型输出格式（自定义 `<tool_call>` 与 DeepSeek 原生 DSML），容忍格式噪声
+- **工具调用解析** —— 兼容两种模型输出格式（自定义 `<tool_call>` 与 DeepSeek 原生 DSML），容忍格式噪声：括号缺失或多写、裸换行、单反斜杠 Windows 路径等非法转义
 - **结构化日志** —— 分级别（error/warn/info/debug）、按请求 ID 串联、支持文件输出与大小轮转
 - **可视化配置页** —— `/admin` 页面在线修改配置并持久化，无需重启（host/port 除外）
 - **敏感字段保护** —— `authorization` 不会明文返回前端，仅显示长度摘要；配置文件写入权限 `0600`
@@ -255,8 +255,8 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 │       ├── index.js      # tools 层聚合入口
 │       ├── prompt.js     # Prompt 构造：buildPromptFromMessages / formatToolsInstruction
 │       ├── buffer.js     # ToolCallBuffer：流式工具标签缓冲与切分
-│       ├── parse.js      # 工具调用解析：JSON 与 DSML、balanceBrackets、fixRawNewlinesInJson、coerceDsmlValue
-│       ├── residue.js    # 工具标签正则常量与 stripToolCallResidue 残留清洗
+│       ├── parse.js      # 工具调用解析：JSON 与 DSML、balanceBrackets、fixRawNewlinesInJson、fixInvalidJsonEscapes、coerceDsmlValue
+│       ├── residue.js    # 工具标签正则常量、字符串状态机、stripToolCallResidue 残留清洗
 │       ├── ids.js        # 工具调用 ID 生成
 │       └── log.js        # tools 层日志
 ├── config.json         # 运行时配置（含凭证，权限 0600，勿提交到版本库）
@@ -299,6 +299,7 @@ curl -X PUT http://127.0.0.1:3001/admin/api/config \
 - `ToolCallBuffer` —— 流式增量解析器，识别 `<tool_call>` 与 DSML 两种格式，容忍跨 chunk 截断、全角/半角竖线混用、缺失外层包裹等异常；用字符串状态机保证 content 里的标签字面量不被误切
 - `balanceBrackets()` —— 字符串感知的单遍括号修复，处理模型少写/多写括号、字符串未闭合
 - `fixRawNewlinesInJson()` —— 修复 JSON 字符串内的裸换行，避免 `JSON.parse` 失败
+- `fixInvalidJsonEscapes()` —— 只在字符串内部把非法反斜杠转义（如 Windows 路径 `d:\study` 里的 `\s` / `\l`）补成双反斜杠，避免整段 JSON 解析失败；字符串外不动
 - `coerceDsmlValue()` —— 按模型显式声明的类型转换参数，默认保留字符串（避免 `"007"` 被误转数字）
 - `summarizeArgs()` —— 把历史工具调用参数压成一行摘要，避免长 JSON 污染上下文
 

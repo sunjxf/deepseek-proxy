@@ -1,10 +1,10 @@
-@echo off
+﻿@echo off
 setlocal
 chcp 65001 >nul
 
 rem ============================================================
-rem  DeepSeek Proxy 停止脚本（强杀）
-rem  用法：stop.bat
+rem  DeepSeek Proxy stopper (force kill)
+rem  Usage: stop.bat
 rem ============================================================
 
 cd /d "%~dp0"
@@ -12,7 +12,7 @@ set "ROOT=%~dp0"
 set "PID_FILE=%ROOT%logs\proxy.pid"
 
 if not exist "%PID_FILE%" (
-  echo [提示] 未找到 PID 文件，尝试按端口兜底查找...
+  echo [INFO] no PID file, falling back to port lookup...
   goto FALLBACK
 )
 
@@ -20,37 +20,37 @@ set /p PID=<"%PID_FILE%"
 
 call :IS_RUNNING %PID%
 if "%RUNNING%"=="0" (
-  echo [提示] PID %PID% 不是运行中的 node 进程，清理 PID 文件。
+  echo [INFO] PID %PID% is not a running node process, removing PID file.
   del /f /q "%PID_FILE%" >nul 2>nul
   exit /b 0
 )
 
-echo [信息] 正在结束 PID=%PID% ...
+echo [INFO] stopping PID=%PID% ...
 taskkill /PID %PID% /T /F >nul 2>nul
 
 ping -n 2 127.0.0.1 >nul
 
 call :IS_RUNNING %PID%
 if "%RUNNING%"=="1" (
-  echo [错误] 无法结束 PID=%PID%
+  echo [ERROR] could not stop PID=%PID%
   exit /b 1
 )
 
 del /f /q "%PID_FILE%" >nul 2>nul
-echo [成功] 服务已停止。
+echo [OK] server stopped.
 exit /b 0
 
 :FALLBACK
-rem 没 PID 文件时，用命令行特征匹配（只在唯一命中时才杀）
+rem no PID file: match by command line (kill only on unique hit)
 set "FOUND="
 for /f "tokens=2" %%P in ('wmic process where "name='node.exe'" get ProcessId^,CommandLine /format:list 2^>nul ^| findstr /i "src\\index.js"') do set "FOUND=%%P"
 if not defined FOUND (
-  echo [提示] 没有找到运行中的代理服务。
+  echo [INFO] no running proxy service found.
   exit /b 0
 )
-echo [信息] 找到 node 进程 PID=%FOUND%，正在结束...
+echo [INFO] found node process PID=%FOUND%, stopping...
 taskkill /PID %FOUND% /T /F >nul 2>nul
-echo [成功] 已结束。
+echo [OK] stopped.
 exit /b 0
 
 :IS_RUNNING
